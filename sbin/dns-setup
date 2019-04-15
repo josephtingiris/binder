@@ -1,0 +1,66 @@
+#!/bin/bash
+
+# setup/check dns servers ...
+
+# 20190415, joseph.tingiris@gmail.com
+
+Dns_Dir=$(dirname $(dirname "$(readlink -e "$0")"))
+Dns_Source="${Dns_Dir}/bin/dns"
+if [ ! -r "${Dns_Source}" ]; then
+    printf "\naborting, '${Dns_Source}' source file not readable\n\n"
+    exit 2
+fi
+source "${Dns_Source}"
+
+if [ "$1" == "reinstall" ]; then
+    Reinstall=0
+else
+    Reinstall=1
+fi
+
+cd "${Dns_Dir}"
+
+# create secondary config from primary
+# cat "etc/template/template.primary.conf" | sed -e '/primary/s//secondary/g' > "etc/template/template.secondary.conf"
+
+Dns_Templates=()
+Dns_Templates+=(dns.conf)
+Dns_Templates+=(template.shared.masters.conf)
+Dns_Templates+=(template.shared.private.forwarder.zones.conf)
+Dns_Templates+=(template.shared.public.forwarder.zones.conf)
+Dns_Templates+=(template.primary.conf)
+Dns_Templates+=(template.primary.private.clients.acl.conf)
+Dns_Templates+=(template.primary.private.notify.conf)
+Dns_Templates+=(template.primary.private.response-policy.conf)
+Dns_Templates+=(template.primary.private.zones.conf)
+Dns_Templates+=(template.primary.public.clients.acl.conf)
+Dns_Templates+=(template.primary.public.notify.conf)
+Dns_Templates+=(template.primary.public.response-policy.conf)
+Dns_Templates+=(template.primary.public.zones.conf)
+Dns_Templates+=(template.secondary.conf)
+Dns_Templates+=(template.secondary.private.clients.acl.conf)
+Dns_Templates+=(template.secondary.private.notify.conf)
+Dns_Templates+=(template.secondary.private.response-policy.conf)
+Dns_Templates+=(template.secondary.private.zones.conf)
+Dns_Templates+=(template.secondary.public.clients.acl.conf)
+Dns_Templates+=(template.secondary.public.notify.conf)
+Dns_Templates+=(template.secondary.public.response-policy.conf)
+Dns_Templates+=(template.secondary.public.zones.conf)
+
+
+# create/change (--force) keys
+
+Dns_Keys=()
+Dns_Keys+=(rndc)
+Dns_Keys+=(private.zone)
+Dns_Keys+=(public.zone)
+
+if [ $Reinstall -eq 0 ]; then
+    Dns_Key_Args="--force"
+else
+    Dns_Key_Args=""
+fi
+
+for Dns_Key in ${Dns_Keys[@]}; do
+    dns-key "${Dns_Key}" ${Dns_Key_Args}
+done
