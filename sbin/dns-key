@@ -1,0 +1,133 @@
+#!/bin/bash
+
+# 20181205, jtingiris
+
+# https://ftp.isc.org/www/bind/arm95/Bv9ARM.ch04.html#tsig
+
+Dns_Dir=$(dirname $(dirname "$(readlink -e "$0")"))
+Dns_Source="${Dns_Dir}/bin/dns"
+if [ ! -r "${Dns_Source}" ]; then
+    printf "\naborting, '${Dns_Source}' source file not readable\n\n"
+    exit 2
+fi
+source "${Dns_Source}"
+
+#
+# Globals
+#
+
+Key_File_Bits=512
+Cfg_Dir=$(readlink -e $(dirname $(readlink -e $0))/../etc)
+Key_Dir=${Cfg_Dir}/key
+
+#
+# Functions
+#
+
+function Usage() {
+    printf "\n$0 <key name> [-f|--force]\n\n"
+    exit 1
+}
+
+#
+# Main
+#
+
+for DIR in "${Cfg_Dir}" "${Key_Dir}"; do
+    if [ ! -d ${DIR} ] || [ ! -w ${DIR} ]; then
+        aborting "'${DIR}' directory not found writable"
+    fi
+done
+unset DIR
+
+declare -l Key="$(echo "$1" | sed -e '/.key$/s///g')"
+declare -l Force="$2"
+if [ "${Force}" == "-f" ] || [ "${Force}" == "-force" ] || [ "${Force}" == "--force" ]; then
+    Force_Flag=1
+else
+    Force_Flag=0
+fi
+
+if [ "${Key}" == "" ]; then Usage; fi
+
+verbose "NOTICE: Cfg_Dir = ${Cfg_Dir}"
+verbose "NOTICE: Key_Dir = ${Key_Dir}"
+
+cd "${Cfg_Dir}"
+
+Max_Try=3
+
+Named_Key_File="${Cfg_Dir}/named.shared.${Key}.key"
+if [ ${Force_Flag} -eq 1 ] && [ -w "${Named_Key_File}" ]; then
+    rm -f "${Named_Key_File}"
+fi
+
+Try=0
+while [ ${Try} -le ${Max_Try} ]; do
+    let Try=${Try}+1
+    Public_Key_File=$(ls ${Key_Dir}/K${Key}.*.key 2> /dev/null)
+    Private_Key_File=$(ls ${Key_Dir}/K${Key}.*.private 2> /dev/null)
+    if [ ${Force_Flag} -eq 1 ] && [ ${Try} -eq 1 ]; then
+        if [ -w "${Public_Key_File}" ]; then
+            rm -f "${Public_Key_File}"
+            Public_Key_File=""
+        fi
+        if [ -w "${Private_Key_File}" ]; then
+            rm -f "${Private_Key_File}"
+            Private_Key_File=""
+        fi
+    fi
+    if [ "${Public_Key_File}" == "" ] || [ "${Private_Key_File}" == "" ]; then
+        echo "generating new keys for ${Key} ..."
+        cd "${Key_Dir}"
+        dnssec-keygen -a HMAC-MD5 -b ${Key_File_Bits} -n HOST ${Key}. &> /dev/null
+        cd "${Cfg_Dir}"
+    fi
+done
+
+if [ "${Public_Key_File}" == "" ] || [ "${Private_Key_File}" == "" ]; then
+    echo
+    echo "ERROR generating new keys for ${Key} (Try=${Try})"
+    exit 1
+fi
+
+if [ ! -f "${Named_Key_File}" ]; then
+    if [ -f "${Public_Key_File}" ]; then
+        Named_Secret=$(cat "${Public_Key_File}" | awk '{print $NF}')
+        if [ "${Named_Secret}" != "" ]; then
+            echo "updating dns secret for ${Key} ..."
+            echo "//" > ${Named_Key_File}
+            echo "// ${Named_Key_File}" >> ${Named_Key_File}
+            echo "//" >> ${Named_Key_File}
+            echo >> ${Named_Key_File}
+            echo "key \"${Key}.key\" {" >> "${Named_Key_File}"
+            echo "    algorithm hmac-md5;" >> "${Named_Key_File}"
+            echo "    secret \"${Named_Secret}\";" >> "${Named_Key_File}"
+            echo "};" >> "${Named_Key_File}"
+        fi
+    fi
+fi
+
+if [ ! -f "${Named_Key_File}" ]; then
+    aborting "ERROR generating dns key for ${Key}"
+fi
+
+echo
+
+dnsEcho "Key = ${Key}.key"
+
+if [ -f "${Named_Key_File}" ]; then
+    dnsEcho "Named_Key_File = ${Named_Key_File}"
+fi
+
+if [ -f "${Public_Key_File}" ]; then
+    dnsEcho "Public_Key_File = ${Public_Key_File}"
+fi
+
+if [ -f "${Private_Key_File}" ]; then
+    dnsEcho "Private_Key_File = ${Private_Key_File}"
+fi
+
+echo
+
+exit 0
