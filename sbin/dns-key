@@ -78,24 +78,25 @@ while [ ${Try} -le ${Max_Try} ]; do
         fi
     fi
     if [ "${Public_Key_File}" == "" ] || [ "${Private_Key_File}" == "" ]; then
-        echo "generating new keys for ${Key} ..."
         cd "${Key_Dir}"
         dnssec-keygen -a HMAC-MD5 -b ${Key_File_Bits} -n HOST ${Key}. &> /dev/null
+        if [ $? -eq 0 ]; then
+            dnsEcho "[INSTALLED]: new ${Key}.key"
+        else
+            aborting "'dnssec-keygen -a HMAC-MD5 -b ${Key_File_Bits} -n HOST ${Key}. &> /dev/null' failed"
+        fi
         cd "${Cfg_Dir}"
     fi
 done
 
 if [ "${Public_Key_File}" == "" ] || [ "${Private_Key_File}" == "" ]; then
-    echo
-    echo "ERROR generating new keys for ${Key} (Try=${Try})"
-    exit 1
+    aborting "ERROR generating new keys for ${Key}.key (Try=${Try})"
 fi
 
 if [ ! -f "${Named_Key_File}" ]; then
     if [ -f "${Public_Key_File}" ]; then
         Named_Secret=$(cat "${Public_Key_File}" | awk '{print $NF}')
         if [ "${Named_Secret}" != "" ]; then
-            echo "updating dns secret for ${Key} ..."
             echo "//" > ${Named_Key_File}
             echo "// ${Named_Key_File}" >> ${Named_Key_File}
             echo "//" >> ${Named_Key_File}
@@ -104,6 +105,11 @@ if [ ! -f "${Named_Key_File}" ]; then
             echo "    algorithm hmac-md5;" >> "${Named_Key_File}"
             echo "    secret \"${Named_Secret}\";" >> "${Named_Key_File}"
             echo "};" >> "${Named_Key_File}"
+            if [ $? -eq 0 ]; then
+                dnsEcho "[INSTALLED]: new named secret for ${Key}.key"
+            else
+                aborting "failed to install '${Named_Key_File}'"
+            fi
         fi
     fi
 fi
@@ -114,18 +120,24 @@ fi
 
 echo
 
-dnsEcho "Key = ${Key}.key"
+dnsEcho "[OK]:Key = ${Key}.key"
 
 if [ -f "${Named_Key_File}" ]; then
-    dnsEcho "Named_Key_File = ${Named_Key_File}"
+    dnsEcho "[OK]:Named_Key_File = ${Named_Key_File}"
+else
+    dnsEcho "[MISSING]:Named_Key_File = ${Named_Key_File}"
 fi
 
 if [ -f "${Public_Key_File}" ]; then
-    dnsEcho "Public_Key_File = ${Public_Key_File}"
+    dnsEcho "[OK]:Public_Key_File = ${Public_Key_File}"
+else
+    dnsEcho "[MISSING]:Public_Key_File = ${Public_Key_File}"
 fi
 
 if [ -f "${Private_Key_File}" ]; then
-    dnsEcho "Private_Key_File = ${Private_Key_File}"
+    dnsEcho "[OK]:Private_Key_File = ${Private_Key_File}"
+else
+    dnsEcho "[MISSING]:Private_Key_File = ${Private_Key_File}"
 fi
 
 echo

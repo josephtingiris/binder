@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# setup/check dns servers ...
+# check/install/reinstall dns servers ...
 
 # 20190415, joseph.tingiris@gmail.com
 
@@ -20,8 +20,17 @@ fi
 
 cd "${Dns_Dir}"
 
-# create secondary config from primary
-# cat "etc/template/template.primary.conf" | sed -e '/primary/s//secondary/g' > "etc/template/template.secondary.conf"
+#
+# create secondary template config from primary
+#
+
+if [ -f "/etc/template/template.primary.conf" ] && [ ! -f "etc/template/template.secondary.conf" ]; then
+    cat "etc/template/template.primary.conf" | sed -e '/primary/s//secondary/g' > "etc/template/template.secondary.conf"
+fi
+
+#
+# change/check/create dns templates
+#
 
 Dns_Templates=()
 Dns_Templates+=(dns.conf)
@@ -47,8 +56,34 @@ Dns_Templates+=(template.secondary.public.notify.conf)
 Dns_Templates+=(template.secondary.public.response-policy.conf)
 Dns_Templates+=(template.secondary.public.zones.conf)
 
+echo
 
-# create/change (--force) keys
+for Dns_Template in "${Dns_Templates[@]}"; do
+    if [ -r "etc/template/${Dns_Template}" ]; then
+        Dns_Named=${Dns_Template/template/named}
+        if [ -r "etc/${Dns_Named}" ] && [ $Reinstall -eq 1 ]; then
+            dnsEcho "[OK]: ${Dns_Named}"
+        else
+            cp "etc/template/${Dns_Template}" "etc/${Dns_Named}"
+            if [ $? -eq 0 ]; then
+                dnsEcho "[INSTALLED]: ${Dns_Named}"
+            else
+                dnsEcho "[FAILED]: ${Dns_Named}"
+                aborting "failed to 'cp \"etc/template/${Dns_Template}\" \"etc/${Dns_Named}\"'"
+            fi
+        fi
+    else
+        dnsEcho "[MISSING]: ${Dns_Template}"
+        aborting "bug"
+    fi
+    unset Dns_Named
+done
+
+echo
+
+#
+# change/check/create dns keys
+#
 
 Dns_Keys=()
 Dns_Keys+=(rndc)
