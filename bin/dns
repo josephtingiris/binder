@@ -30,6 +30,84 @@ function aborting() {
     exit 2
 }
 
+# ouput config key value from dns.conf
+function dnsBackup() {
+    local backup_from="$1"
+    local backup_to="$2"
+
+    if [ ! -r "${backup_from}" ]; then
+        verbose "WARNING: backup from '${backup_from}' failed; file not readable"
+        return 1
+    fi
+
+    set -o pipefail
+
+    if [ ${#backup_to} -eq 0 ]; then
+        backup_to=${Dns_Dir}/backup$(echo "${backup_from}" | sed "s#${Dns_Dir}##g")
+        if [ $? -ne 0 ]; then
+            aborting "backup from '${backup_from}' failed; failed to sed '${Dns_Dir}'"
+        fi
+    fi
+    backup_to+="-$(date +%Y%m%d)"
+
+    local backup_count=1
+    while [ -a "${backup_to}.${backup_count}" ]; do
+        let backup_count=${backup_count}+1
+    done
+
+    if [ -a "${backup_to}.$((backup_count-1))" ] && [ ! -d "${backup_to}.$((backup_count-1))" ]; then
+        diff -q "${backup_from}" "${backup_to}.$((backup_count-1))" &> /dev/null
+        if [ $? -eq 0 ]; then
+            # no need to backup; files are identical
+            return 2
+        fi
+    fi
+
+    backup_to+=".${backup_count}"
+
+    verbose "DEBUG: backup_from=${backup_from}"
+    verbose "DEBUG: backup_to=${backup_to}"
+
+    local backup_dir
+    if [ ! -d "${backup_from}" ]; then
+        backup_dir="$(dirname "${backup_to}")"
+    else
+        backup_dir="${backup_to}"
+    fi
+
+    if [ ! -d "${backup_dir}" ]; then
+        mkdir -p "${backup_dir}"
+        if [ $? -ne 0 ]; then
+            aborting "failed to mkdir -p '${backup_dir}'"
+        fi
+    fi
+
+    if [ ! -w "${backup_dir}" ]; then
+            aborting "'${backup_dir}' directory not writable"
+    fi
+
+    verbose "DEBUG: backup_dir=${backup_dir}"
+
+    if [ -d "${backup_from}" ]; then
+        cp -rp "${backup_from}/" "${backup_to}"
+        if [ $? -eq 0 ]; then
+            return 0
+        else
+            aborting "cp -rp '${backup_from}/' '${backup_to}/' failed"
+        fi
+    else
+        cp -p "${backup_from}" "${backup_to}"
+        if [ $? -eq 0 ]; then
+            return 0
+        else
+            aborting "cp -p '${backup_from}' '${backup_to}/' failed"
+        fi
+    fi
+
+    aborting "$FUNCNAME dead code; bug"
+}
+
+# ouput config key value from dns.conf
 function dnsConfig() {
     local config_key="$1"
     local config_file="$2"
@@ -59,6 +137,7 @@ function dnsConfig() {
 
 }
 
+# ouput matching config key Dns_Zone value from dns.conf
 function dnsConfigZone() {
     local config_key="$1"
     local config_file="$2"
@@ -112,10 +191,10 @@ function dnsEcho() {
     fi
 
     if [[ "${echo_message^^}" == *":"* ]]; then
-        v1="${echo_message%:*}"
+        v1="${echo_message%%:*}"
         v1="${v1#"${v1%%[![:space:]]*}"}"
         v1="${v1%"${v1##*[![:space:]]}"}"
-        v2="${echo_message##*:}"
+        v2="${echo_message#*:}"
         v2="${v2#"${v2%%[![:space:]]*}"}"
         v2="${v2%"${v2##*[![:space:]]}"}"
         printf -v echo_message "%-11b : %b" "${v1}" "${v2}"
@@ -123,10 +202,10 @@ function dnsEcho() {
     fi
 
     if [[ "${echo_message^^}" == *"="* ]]; then
-        v1="${echo_message%=*}"
+        v1="${echo_message%%=*}"
         v1="${v1#"${v1%%[![:space:]]*}"}"
         v1="${v1%"${v1##*[![:space:]]}"}"
-        v2="${echo_message##*=}"
+        v2="${echo_message#*=}"
         v2="${v2#"${v2%%[![:space:]]*}"}"
         v2="${v2%"${v2##*[![:space:]]}"}"
         printf -v echo_message "%-40b = %b" "${v1}" "${v2}"
@@ -245,6 +324,10 @@ fi
 
 if [ ! -d "${Dns_Dir}" ] || [ ! -r "${Dns_Dir}" ]; then
     aborting "dns directory; '${Dns_Dir}' directory not readable"
+fi
+
+if [ ! -f "${Dns_Dir}/etc/named.primary.conf" ]; then
+    aborting "ERROR: ${Dns_Dir}/etc/named.primary.conf file not found"
 fi
 
 verbose "NOTICE: Dns_Dir=${Dns_Dir}"
