@@ -1,0 +1,673 @@
+#!/bin/bash
+
+# add/check/delete dns zones ...
+
+# 20190408, joseph.tingiris@gmail.com
+
+#
+# global variables
+#
+
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+
+if [ ${#Verbose} -eq 0 ]; then
+    declare -i Verbose=4 # WARNING
+else
+    if [ ${#VERBOSE} -gt 0 ]; then
+        Verbose=${VERBOSE}
+    fi
+fi
+
+Verbose_Level_Prefix=on
+
+Dns_Actions=()
+Dns_Actions+=(add)
+Dns_Actions+=(check)
+Dns_Actions+=(delete)
+Dns_Actions+=(force)
+Dns_Action_Valid=1
+
+Dns_Views=()
+Dns_Views+=(private)
+Dns_Views+=(public)
+Dns_View_Valid=1
+
+#
+# functions
+#
+
+# output an 'aborting' message and exit with a non-zero return code
+function aborting() {
+    local abort_message="${@}"
+    printf "\naborting, %s\n\n" "${abort_message}"
+    exit 2
+}
+
+function usage() {
+    printf "\nusage: %s <action> <zone name> [view name]\n\n" "${0}"
+
+    if [ "${Dns_Actions}" != "" ]; then
+        printf "supported actions:\n\n"
+        let Dns_Action_Count=0
+        for Dns_Action in ${Dns_Actions[@]}; do
+            if [ ${Dns_Action_Count} -eq 0 ]; then
+                printf "    ${Dns_Action}"
+            else
+                printf ", ${Dns_Action}"
+            fi
+            let Dns_Action_Count=${Dns_Action_Count}+1
+        done
+        printf "\n\n"
+        unset Dns_Action
+    fi
+
+    if [ "${Dns_Views}" != "" ]; then
+        printf "supported views:\n\n"
+        let Dns_View_Count=0
+        for Dns_View in ${Dns_Views[@]}; do
+            if [ ${Dns_View_Count} -eq 0 ]; then
+                printf "    ${Dns_View}"
+            else
+                printf ", ${Dns_View}"
+            fi
+            let Dns_View_Count=${Dns_View_Count}+1
+        done
+        printf "\n\n"
+        unset Dns_View
+    fi
+
+    if [ ${#1} -ne 0 ]; then
+        local usage_message="${@}"
+        printf "NOTE: %s\n\n" "${usage_message}"
+    fi
+    exit 1
+}
+
+if [ "$(type -t verbose)" != "function" ]; then
+    function verbose() {
+        local verbose_arguments=($@)
+        local verbose_level verbose_message
+
+        if [ ${#2} -gt 0 ]; then
+            verbose_message=(${verbose_arguments[@]}) # preserve verbose_arguments
+            verbose_level=${verbose_message[${#verbose_message[@]}-1]}
+        else
+            verbose_message="${1}"
+            verbose_level=""
+        fi
+
+        if [[ ! ${verbose_level} =~ ^[0-9]+$ ]]; then
+            verbose_level=0
+        fi
+
+        if [[ ${Verbose} =~ ^[0-9]+$ ]]; then
+            if [ ${verbose_level} -le ${Verbose} ]; then
+                (>&2 printf "%b\n" "${verbose_message}")
+            fi
+        fi
+    }
+fi
+
+# Main
+
+Warnings=()
+
+#
+# validate /etc/named.conf
+#
+
+if [ ! -r "/etc/named.conf" ]; then
+    aborting "ERROR: /etc/named.conf file not readable"
+fi
+
+if [ ${#1} -eq 0 ] || [ ${#2} -eq 0 ]; then
+    usage
+fi
+
+#
+# validate Dns_Dir
+#
+
+Dns_Dir=$(egrep "[[:space:]]directory[[:space:]]" /etc/named.conf | awk '{print $NF}' | sed -e '/"/s///g' -e '/;/s///g' -e '/\/$/s///g')
+
+if [ ! -d "${Dns_Dir}/zone" ]; then
+    aborting "ERROR: ${Dns_Dir}/zone directory not found"
+fi
+
+verbose "NOTICE: Dns_Dir= ${Dns_Dir}"
+
+if [ ! -f "${Dns_Dir}/etc/named.primary.conf" ]; then
+    aborting "ERROR: ${Dns_Dir}/etc/named.primary.conf file not found"
+fi
+
+#
+# validate action
+#
+
+for Dns_Action in ${Dns_Actions[@]}; do
+    if [ "${1,,}" == "${Dns_Action}" ]; then
+        Dns_Action_Valid=0
+        break
+    fi
+done
+if [ ${Dns_Action_Valid} -eq 0 ]; then
+    shift
+else
+    usage "invalid action '${1}'"
+fi
+verbose "INFO: Dns_Action=${Dns_Action}"
+
+#
+# validate zone
+#
+
+declare -l Zone="$1"
+Zone=$(echo "${Zone}" | sed -e 's#\.\.*#\.#g' -e 's#^\.##g' -e 's#\.$##g');
+if [ ${#Zone} -gt 0 ]; then
+    shift
+else
+    usage "invalid zone '${1}'"
+fi
+if [[ "${Zone}" =~ rpz$ ]]; then
+    Origin="${Zone}"
+    Soa=localhost
+else
+    Origin="${Zone}"
+    Soa="${Zone}"
+fi
+
+if [[ "${Zone}" == *"arpa"* ]]; then
+    Zone_Dir="zone/arpa"
+else
+    Zone_Dir="zone"
+fi
+
+#
+# validate view(s)
+#
+
+for Dns_View in ${Dns_Views[@]}; do
+    if [ "${1,,}" == "${Dns_View}" ]; then
+        Dns_View_Valid=0
+        break
+    fi
+done
+
+if [ ${Dns_View_Valid} -eq 0 ]; then
+    Views=(${Dns_View})
+    shift
+else
+    if [ ${#1} -eq 0 ]; then
+        Views=(${Dns_Views[@]})
+    else
+        if [ "${1}" == "forward" ]; then
+            Dns_View="${1}"
+            Views=(${Dns_View})
+            shift
+        else
+            usage "invalid view '${1}'"
+        fi
+    fi
+fi
+verbose "INFO: Dns_View=${Dns_View}"
+
+#
+# set dynamic variable values
+#
+
+Printf_Pad=65
+Serial="$(date +%Y%m%d)01"
+
+#
+# create zone dirs
+#
+
+if [ "${Dns_Action}" == "add" ] || [ "${Dns_Action}" == "force" ]; then
+    if [ ! -d "${Dns_Dir}/${Zone_Dir}" ]; then
+        mkdir -p "${Dns_Dir}/${Zone_Dir}"
+        if [ $? -ne 0 ]; then
+            aborting "failed to mkdir ${Dns_Dir}/${Zone_Dir}"
+        fi
+    fi
+    if [ ! -d "${Dns_Dir}/cache/${Zone_Dir}" ]; then
+        mkdir -p "${Dns_Dir}/cache/${Zone_Dir}"
+        if [ $? -ne 0 ]; then
+            aborting "failed to mkdir ${Dns_Dir}/cache/${Zone_Dir}"
+        fi
+    fi
+fi
+
+#
+# experimental
+#
+
+if [ "${Zone}" == "dns.conf" ]; then
+
+    if [ -r /etc/dns.conf ]; then
+        Dns_Conf="/etc/dns.conf"
+    else
+        if [ -r ${Dns_Dir}/etc/dns.conf ]; then
+            Dns_Conf="${Dns_Dir}/etc/dns.conf"
+        else
+            aborting "dns.conf file not readable"
+        fi
+    fi
+
+    # convert forwarder.zones to dns.conf single line format
+    if [ "${Views}" == "forward" ]; then
+
+        if [ "${Dns_Action}" == "delete" ] || [ "${Dns_Action}" == "force" ]; then
+            if [ -f "${Dns_Dir}/etc/named.forwarder.zones.conf" ] && [ -w "${Dns_Dir}/etc/named.forwarder.zones.conf" ]; then
+                # not done to a point of 'safe'
+                for zz in $(cat "${Dns_Dir}/etc/named.forwarder.zones.conf" | egrep -ve "//|\#" | egrep -e '^zone' | awk '{print $2}' | sed -e "s#\"##g"); do
+                    echo "deleting '$zz' from ${Dns_Conf}"
+
+                    # remove it with sed
+                    sed -i "/^Dns_Zone=${zz}/D" "${Dns_Conf}"
+                done
+            fi
+        fi
+
+        if [ "${Dns_Action}" == "add" ] || [ "${Dns_Action}" == "force" ]; then
+            if [ -f "${Dns_Dir}/etc/named.forwarder.zones.conf" ] && [ -w "${Dns_Dir}/etc/named.forwarder.zones.conf" ]; then
+                cat "${Dns_Dir}/etc/named.forwarder.zones.conf" | egrep -ve '//|#' | egrep -e '^zone|forwarders' | sed ':a;N;$!ba;s/{\n/ /g' | sed -nEe 's#^zone "(.*).*"(.*).*\{#\1#p' | sed -e 's# };$##g' | awk '{zone=$1; $1=""; print "Dns_Zone="zone", forward,"$0","}' >> "${Dns_Conf}"
+
+                fi
+            fi
+
+        # sort
+        sort -uV "${Dns_Conf}" -o "${Dns_Conf}"
+        sort -t, -k2 "${Dns_Conf}" -o "${Dns_Conf}"
+        cat "${Dns_Conf}"
+
+        exit
+    fi
+
+    # this allows an extra (undocumented) argument (for dns.conf searches)
+    if [ ${#1} -eq 0 ]; then
+        GREP="."
+    else
+        GREP="${1}"
+    fi
+
+    verbose "INFO: Views=${Views[@]}"
+    for View in ${Views[@]}; do
+
+        verbose "DEBUG: View=${View}"
+
+        while read Dns_Zone_Line; do
+            unset Zone Zone_View
+
+            declare -l Zone
+            Zone=${Dns_Zone_Line%%,*}
+            Zone="${Zone#"${Zone%%[![:space:]]*}"}"
+            Zone="${Zone%"${Zone##*[![:space:]]}"}"
+
+            if [ ${#Zone} -eq 0 ]; then
+                aborting "dns.conf zone '${GREP}' is empty"
+            fi
+
+            declare -l Zone_View
+            Zone_View=${Dns_Zone_Line#*,}
+            Zone_View=${Zone_View%%,*}
+            Zone_View="${Zone_View#"${Zone_View%%[![:space:]]*}"}"
+            Zone_View="${Zone_View%"${Zone_View##*[![:space:]]}"}"
+
+            if [ "${Zone_View}" != "${View}" ]; then
+                continue
+            fi
+
+            verbose "DEBUG: Dns_Zone_Line=${Dns_Zone_Line}"
+
+            verbose "INFO: Zone='${Zone}'"
+            verbose "INFO: Zone_View='${Zone_View}'"
+
+            printf "\n"
+            printf "Zone = ${Zone},"
+            printf " Action = ${Dns_Action},"
+            printf " View = ${View}"
+            printf "\n"
+
+            $0 "${Dns_Action}" "${Zone}" "${Zone_View}"
+            if [ $? -ne 0 ]; then
+                if [ "${Dns_Action}" != "check" ]; then
+                    aborting "zone '${Zone}', view '${Zone_View}', failed $0 ${Dns_Action}"
+                fi
+            fi
+
+            echo
+        done <<< "$(grep ^Dns_Zone= "${Dns_Conf}" 2> /dev/null | grep ${GREP} | awk -F= '{print $NF}' | awk -F\# '{print $1}')"
+
+    # Views complete
+    done
+
+    exit $?
+fi
+
+#
+# dns-zones logic
+#
+
+if [ "${Views}" == "forward" ]; then
+    aborting "the forward view is only supported for dns.conf zones"
+fi
+
+Servers=(primary secondary)
+for Server in ${Servers[@]}; do
+
+    for View in ${Views[@]}; do
+
+        printf "\n"
+        printf "Zone = ${Zone},"
+        printf " Zone_Dir = ${Zone_Dir},"
+        printf " Action = ${Dns_Action},"
+        printf " Server = ${Server},"
+        printf " View = ${View},"
+        printf " Origin = ${Origin},"
+        printf " Soa = ${Soa}"
+        printf "\n"
+
+        #
+        # process primary & secondary zone configs
+        #
+
+
+        Template_Zones_Conf="${Dns_Dir}/etc/template/template.${Server}.zones.conf"
+        Zones_Conf="${Dns_Dir}/etc/named.${Server}.${View}.zones.conf"
+
+        Zones_Conf_Exists=1 # false
+
+        if [ ! -r "${Template_Zones_Conf}" ]; then
+            verbose "ALERT: ${Template_Zones_Conf}' file not readable\n"
+            if [ "${Dns_Action}" != "check" ]; then
+                continue
+            fi
+        else
+            printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} template zones config" "${Template_Zones_Conf}"
+        fi
+
+        if [ -f "${Zones_Conf}" ]; then
+            if [ ! -w "${Zones_Conf}" ]; then
+                verbose "ALERT: ${Zones_Conf}' file not writable\n"
+                if [ "${Dns_Action}" != "check" ]; then
+                    continue
+                fi
+            fi
+
+            printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} zone config" "${Zones_Conf}"
+
+            if grep "^[[:space:]]*zone[[:space:]]\"${Zone}\"" "${Zones_Conf}" &> /dev/null; then
+                Zones_Conf_Exists=0 # true
+            else
+                Zones_Conf_Exists=1 # false
+            fi
+        fi
+
+        if [ ${Zones_Conf_Exists} -eq 0 ]; then
+            printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} zone config" "OK"
+        else
+            printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} zone config" "NOT FOUND"
+        fi
+
+        if [ "${Dns_Action}" == "delete" ] || [ "${Dns_Action}" == "force" ]; then
+            if [ $Zones_Conf_Exists -eq 0 ]; then
+                Add_Rc=0
+                [ $Add_Rc -eq 0 ] && sed -i "/^zone[[:space:]]\"${Zone}\"/,/^};$/d" "${Zones_Conf}"
+                Add_Rc=$?
+                [ $Add_Rc -eq 0 ] && sed -i '/^$/N;/^\n$/D' "${Zones_Conf}"
+                Add_Rc=$?
+                [ $Add_Rc -eq 0 ] && sed -i -e '1{/^[[:space:]]*$/d}' -e '${/^[[:space:]]*$/d}' "${Zones_Conf}"
+                Add_Rc=$?
+                [ $Add_Rc -eq 0 ] && sed -i -e '1{/^$/d}' -e '${/^$/d}' "${Zones_Conf}"
+                Add_Rc=$?
+                if [ $Add_Rc -eq 0 ]; then
+                    printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} zone config" "DELETED"
+                    Zones_Conf_Exists=1
+                else
+                    aborting "failed to remove '${Zone}' from ${Zones_Conf}"
+                fi
+            fi
+        fi
+
+        if [ "${Dns_Action}" == "add" ] || [ "${Dns_Action}" == "force" ]; then
+            if [ ${Zones_Conf_Exists} -eq 1 ]; then
+                Add_Rc=0
+                [ $Add_Rc -eq 0 ] && echo >> "${Zones_Conf}"
+                Add_Rc=$?
+                [ $Add_Rc -eq 0 ] && sed -e "s#++ORIGIN++#${Origin}#g" -e "s#++SERIAL++#${Serial}#g" -e "s#++SOA++#${Soa}#g" -e "s#++VIEW++#${View}#g" -e "s#++ZONE++#${Zone}#g" -e "s#++ZONE_DIR++#${Zone_Dir}#g" "${Template_Zones_Conf}" >> "${Zones_Conf}"
+                Add_Rc=$?
+                [ $Add_Rc -eq 0 ] && sed -i '/^$/N;/^\n$/D' "${Zones_Conf}"
+                Add_Rc=$?
+                [ $Add_Rc -eq 0 ] && sed -i -e '1{/^[[:space:]]*$/d}' -e '${/^[[:space:]]*$/d}' "${Zones_Conf}"
+                Add_Rc=$?
+                [ $Add_Rc -eq 0 ] && sed -i -e '1{/^$/d}' -e '${/^$/d}' "${Zones_Conf}"
+                Add_Rc=$?
+                if [ $Add_Rc -eq 0 ]; then
+                    printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} zone config" "ADDED"
+                    Zones_Conf_Exists=0
+                else
+                    aborting "failed to add '${Zone}' to ${Zones_Conf}"
+                fi
+            fi
+        else
+            printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} zone config" "NOT ADDED"
+        fi
+
+
+        #
+        # process primary zone file
+        #
+
+
+        Zone_File_Exists=1 # false
+
+        if [ "${Server}" == "primary" ]; then
+
+            Template_Zone_File="${Dns_Dir}/etc/template/template.${Server}.zone"
+            Zone_File="${Dns_Dir}/${Zone_Dir}/${Zone}.${View}.zone"
+
+            if [ ! -r "${Template_Zone_File}" ]; then
+                verbose "ALERT: ${Template_Zone_File}' file not readable\n"
+                if [ "${Dns_Action}" != "check" ]; then
+                    continue
+                fi
+            else
+                printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} template zone file" "${Template_Zone_File}"
+            fi
+
+            if [ -f "${Zone_File}" ] && [ ! -w "${Zone_File}" ]; then
+                verbose "ALERT: ${Zone_File}' file not writable\n"
+                if [ "${Dns_Action}" != "check" ]; then
+                    continue
+                fi
+            else
+                if [ -s "${Zone_File}" ]; then
+                    printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} zone file" "${Zone_File}"
+                    Zone_File_Exists=0 # true
+                else
+                    Zone_File_Exists=1 # false
+                fi
+            fi
+
+            if [ ${Zone_File_Exists} -eq 0 ]; then
+                printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} zone file" "OK"
+            else
+                printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} zone file" "NOT FOUND"
+            fi
+
+            if [ "${Dns_Action}" == "delete" ] || [ "${Dns_Action}" == "force" ]; then
+                if [ $Zone_File_Exists -eq 0 ]; then
+                    rm -f "${Zone_File}"
+                    if [ $? -eq 0 ]; then
+                        printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} zone file" "REMOVED"
+                        Zone_File_Exists=1
+                    else
+                        aborting "failed to remove '${Zone_File}'"
+                    fi
+                else
+                    printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} zone file" "NOT REMOVED"
+                fi
+            fi
+
+            if [ "${Dns_Action}" == "add" ] || [ "${Dns_Action}" == "force" ]; then
+                if [ ${Zone_File_Exists} -eq 1 ]; then
+                    Add_Rc=0
+                    [ $Add_Rc -eq 0 ] && sed -e "s#++ORIGIN++#${Origin}#g" -e "s#++SERIAL++#${Serial}#g" -e "s#++SOA++#${Soa}#g" -e "s#++VIEW++#${View}#g" -e "s#++ZONE++#${Zone}#g" -e "s#++ZONE_DIR++#${Zone_Dir}#g" "${Template_Zone_File}" >> "${Zone_File}"
+                    Add_Rc=$?
+                    if [ $Add_Rc -eq 0 ]; then
+                        printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} zone file" "CREATED"
+                        Zone_File_Exists=0
+                    else
+                        aborting "failed to create '${Zone_File}"
+                    fi
+                fi
+            fi
+
+            #
+            # check & alert for zone file error conditions
+            #
+
+            if [ ${Zones_Conf_Exists} -eq 0 ] && [ ${Zone_File_Exists} -eq 1 ]; then
+                Warnings+=("entry for '${Zone}' exists in zones config '${Zones_Conf}', but zone file '${Zone_File}' does NOT exist")
+            fi
+
+        else
+
+            #
+            # check & alert for error conditions
+            #
+
+
+            if [ ${Zones_Conf_Exists} -eq 0 ] && [ ${#Warnings} -ne 0 ]; then
+                Warnings+=("entry for '${Zone}' exists in zones config '${Zones_Conf}'")
+            fi
+
+        fi
+
+
+        #
+        # process primary & secondary response-policy configs
+        #
+
+
+        Response_Policy_Conf_Exists=1
+
+        if [[ "${Zone}" =~ rpz$ ]]; then
+            Response_Policy_Conf="${Dns_Dir}/etc/named.${Server}.${View}.response-policy.conf"
+
+            if [ -f "${Response_Policy_Conf}" ] && [ ! -w "${Response_Policy_Conf}" ]; then
+                aborting "'${Response_Policy_Conf}' file not writable\n"
+            fi
+
+            if [ -f "${Response_Policy_Conf}" ]; then
+                printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} response policy" "${Response_Policy_Conf}"
+                if grep "^[[:space:]]*zone[[:space:]]\"${Zone}\"" "${Response_Policy_Conf}" &> /dev/null; then
+                    Response_Policy_Conf_Exists=0 # true
+                else
+                    Response_Policy_Conf_Exists=1 # false
+                fi
+            fi
+
+            if [ ! -f "${Response_Policy_Conf}" ] && [ $Response_Policy_Conf_Exists -eq 1 ]; then
+                printf "response-policy {\nzone \"${Zone}\";\n};" > "${Response_Policy_Conf}"
+                if [ $? -eq 0 ]; then
+                    printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} response policy" "CREATED"
+                else
+                    aborting "failed to create '${Response_Policy_Conf}'"
+                fi
+            fi
+
+            if [ $Response_Policy_Conf_Exists -eq 0 ]; then
+                printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} response policy" "FOUND"
+            else
+                printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} response policy" "NOT FOUND"
+            fi
+
+            if [ "${Dns_Action}" == "delete" ] || [ "${Dns_Action}" == "force" ]; then
+                if [ $Response_Policy_Conf_Exists -eq 0 ]; then
+                    Add_Rc=0
+                    [ $Add_Rc -eq 0 ] && sed -i "/^[[:space:]]*zone[[:space:]]\"${Zone}\"/d" "${Response_Policy_Conf}"
+                    Add_Rc=$?
+                    [ $Add_Rc -eq 0 ] && sed -i '/^$/N;/^\n$/D' "${Response_Policy_Conf}"
+                    Add_Rc=$?
+                    [ $Add_Rc -eq 0 ] && sed -i -e '1{/^[[:space:]]*$/d}' -e '${/^[[:space:]]*$/d}' "${Response_Policy_Conf}"
+                    Add_Rc=$?
+                    [ $Add_Rc -eq 0 ] && sed -i -e '1{/^$/d}' -e '${/^$/d}' "${Response_Policy_Conf}"
+                    Add_Rc=$?
+                    if [ $Add_Rc -eq 0 ]; then
+                        printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} response policy" "DELETED"
+                        Response_Policy_Conf_Exists=1
+                    else
+                        aborting "failed to remove '${Zone}' from ${Response_Policy_Conf}"
+                    fi
+                else
+                    printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} response policy" "NOT DELETED"
+                fi
+            fi
+
+            if [ "${Dns_Action}" == "add" ] || [ "${Dns_Action}" == "force" ]; then
+                if [ $Response_Policy_Conf_Exists -eq 1 ]; then
+                    Add_Rc=0
+                    [ $Add_Rc -eq 0 ] && sed -i -e "/^[[:space:]]*response-policy[[:space:]].*/s//response-policy\ \{\n\ \ \ \ zone\ \"${Zone}\";/g" "${Response_Policy_Conf}"
+                    [ $Add_Rc -eq 0 ] && sed -i '/^$/N;/^\n$/D' "${Response_Policy_Conf}"
+                    Add_Rc=$?
+                    [ $Add_Rc -eq 0 ] && sed -i -e '1{/^[[:space:]]*$/d}' -e '${/^[[:space:]]*$/d}' "${Response_Policy_Conf}"
+                    Add_Rc=$?
+                    [ $Add_Rc -eq 0 ] && sed -i -e '1{/^$/d}' -e '${/^$/d}' "${Response_Policy_Conf}"
+                    Add_Rc=$?
+                    if [ $Add_Rc -eq 0 ]; then
+                        printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} response policy" "ADDED"
+                        Response_Policy_Conf_Exists=0 # true
+                    else
+                        aborting "failed to add '${Zone}' to ${Zones_Conf}"
+                    fi
+                else
+                    printf "%-${Printf_Pad}b = %s\n" "'${Zone}' ${Server} ${View} response policy" "NOT ADDED"
+                fi
+            fi
+
+            #
+            # check & alert for response-policy error conditions
+            #
+
+            if [ ${Zones_Conf_Exists} -eq 0 ] && [ ${Response_Policy_Conf_Exists} -eq 1 ]; then
+                Warnings+=("entry for '${Zone}' exists in zones config '${Zones_Conf}', but zone entry in '${Response_Policy_Conf}' does NOT exist")
+            fi
+
+        fi
+
+    done
+
+
+    #
+    # named-checkconf, once, for every primary record
+    #
+
+    if [ "${Server}" == "primary" ]; then
+        Zone_Status=$(named-checkconf -z 2> /dev/null | grep "${Zone}\/" 2> /dev/null)
+        printf "%-${Printf_Pad}b = " "'${Zone}' ${Server} ${View} zone status"
+        if [ ${#Zone_Status} -eq 0 ]; then
+            echo "NOT LOADED"
+        else
+            echo ${Zone_Status}
+        fi
+    fi
+
+done
+
+rc=0
+
+# meh ...
+svn perms "${Dns_Dir}" &> /dev/null
+
+if [ ${#Warnings} -gt 0 ]; then
+    printf "\n"
+    for Warning in "${Warnings[@]}"; do
+        verbose "WARNING: $Warning"
+    done
+    printf "\n"
+
+    rc=3
+fi
+
+exit $rc
