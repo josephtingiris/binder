@@ -1,10 +1,10 @@
 dns.conf
-named.common.masters.conf
-named.common.private.forwarder.zones.conf
-named.common.private.zone.key
-named.common.public.forwarder.zones.conf
-named.common.public.zone.key
-named.common.rndc.key
+named.shared.masters.conf
+named.shared.private.forwarder.zones.conf
+named.shared.private.zone.key
+named.shared.public.forwarder.zones.conf
+named.shared.public.zone.key
+named.shared.rndc.key
 named.primary.conf
 named.primary.private.clients.acl.conf
 named.primary.private.notify.conf
