@@ -21,11 +21,19 @@ fi
 cd "${Dns_Dir}"
 
 #
-# create secondary template config from primary
+# create secondary configs from primary
 #
 
-if [ -f "/etc/template/template.primary.conf" ] && [ ! -f "etc/template/template.secondary.conf" ]; then
-    cat "etc/template/template.primary.conf" | sed -e '/primary/s//secondary/g' > "etc/template/template.secondary.conf"
+if [ -f "etc/named.primary.conf" ]; then
+    if [ ! -f "etc/named.secondary.conf" ] || [ $Reinstall -eq 0 ]; then
+        cat "etc/named.primary.conf" | sed -e '/primary/s//secondary/g' > "etc/named.secondary.conf"
+    fi
+fi
+
+if [ -f "etc/template/template.primary.conf" ]; then
+    if [ ! -f "etc/template/template.secondary.conf" ] || [ $Reinstall -eq 0 ]; then
+        cat "etc/template/template.primary.conf" | sed -e '/primary/s//secondary/g' > "etc/template/template.secondary.conf"
+    fi
 fi
 
 #
@@ -33,51 +41,72 @@ fi
 #
 
 Dns_Templates=()
-Dns_Templates+=(dns.conf)
-Dns_Templates+=(template.shared.masters.conf)
-Dns_Templates+=(template.shared.private.forwarder.zones.conf)
-Dns_Templates+=(template.shared.public.forwarder.zones.conf)
-Dns_Templates+=(template.primary.conf)
-Dns_Templates+=(template.primary.private.clients.acl.conf)
-Dns_Templates+=(template.primary.private.notify.conf)
-Dns_Templates+=(template.primary.private.response-policy.conf)
-Dns_Templates+=(template.primary.private.zones.conf)
-Dns_Templates+=(template.primary.public.clients.acl.conf)
-Dns_Templates+=(template.primary.public.notify.conf)
-Dns_Templates+=(template.primary.public.response-policy.conf)
-Dns_Templates+=(template.primary.public.zones.conf)
-Dns_Templates+=(template.secondary.conf)
-Dns_Templates+=(template.secondary.private.clients.acl.conf)
-Dns_Templates+=(template.secondary.private.notify.conf)
-Dns_Templates+=(template.secondary.private.response-policy.conf)
-Dns_Templates+=(template.secondary.private.zones.conf)
-Dns_Templates+=(template.secondary.public.clients.acl.conf)
-Dns_Templates+=(template.secondary.public.notify.conf)
-Dns_Templates+=(template.secondary.public.response-policy.conf)
-Dns_Templates+=(template.secondary.public.zones.conf)
+Dns_Templates+=("${Dns_Dir}/etc/template/dns.conf")
+for template in "${Dns_Dir}/etc/template/template."*; do
+    Dns_Templates+=(${template})
+done
 
 echo
 
 for Dns_Template in "${Dns_Templates[@]}"; do
-    if [ -r "etc/template/${Dns_Template}" ]; then
-        Dns_Named=${Dns_Template/template/named}
-        if [ -r "etc/${Dns_Named}" ] && [ $Reinstall -eq 1 ]; then
-            dnsEcho "[OK]: ${Dns_Named}"
+    Dns_Named=${Dns_Template/template\//}
+    Dns_Named=${Dns_Named/template/named}
+
+    if [ -r "${Dns_Template}" ]; then
+        if [ -r "${Dns_Named}" ] && [ $Reinstall -eq 1 ]; then
+            dnsEcho "[FOUND]: ${Dns_Named}"
         else
-            cp "etc/template/${Dns_Template}" "etc/${Dns_Named}"
+            dnsBackup "${Dns_Named}"
+
+            cp "${Dns_Template}" "${Dns_Named}"
             if [ $? -eq 0 ]; then
                 dnsEcho "[INSTALLED]: ${Dns_Named}"
             else
                 dnsEcho "[FAILED]: ${Dns_Named}"
-                aborting "failed to 'cp \"etc/template/${Dns_Template}\" \"etc/${Dns_Named}\"'"
+                aborting "failed to 'cp \"${Dns_Template}\" \"${Dns_Named}\"'"
             fi
         fi
     else
-        dnsEcho "[MISSING]: ${Dns_Template}"
+        dnsEcho "[MISSING]: ${Dns_Template} file not readable"
         aborting "bug"
     fi
+
     unset Dns_Named
 done
+
+if [ $Reinstall -eq 0 ] || [ "$1" == "headers" ]; then
+    echo
+    Header_Files=()
+    Header_Files+=(${Dns_Templates[@]})
+    for named in "${Dns_Dir}/etc/named."*; do
+        Header_Files+=(${named})
+    done
+
+    for Header_File in "${Header_Files[@]}"; do
+        Dns_Named=${Header_File/template\//}
+        Dns_Named=${Dns_Named/template/named}
+
+        if [ -w "${Header_File}" ] && [ ! -h "${Header_File}" ]; then
+            dnsBackup "${Dns_Named}"
+
+            dnsEcho "[HEADER]: ${Header_File}"
+            if $(head -1 "${Header_File}" | grep ^\/\/  &> /dev/null); then
+                if $(grep ^$ "${Header_File}" &> /dev/null); then
+                    sed -i '1,/^$/d' "${Header_File}"
+                fi
+            fi
+            if [ -s "${Header_File}" ] && [ ! -h "${Header_File}" ]; then
+                sed -i "1s/^/\/\/\n\/\/ $(basename "${Dns_Named}")\n\/\/\n\n/" "${Header_File}"
+            else
+                if [ ! -s "${Header_File}" ] && [ ! -h "${Header_File}" ]; then
+                    printf "//\n// $(basename "${Dns_Named}")\n//\n\n" > "${Header_File}"
+                fi
+            fi
+        fi
+
+        unset Dns_Named
+    done
+fi
 
 echo
 
