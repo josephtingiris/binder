@@ -329,7 +329,7 @@ fi
 
 if ! Dns_Dir=$(dnsConfig Dns_Dir); then
     Dns_Dir=$(dirname "$(readlink -e "$0")")
-    if [ -d "${Dns_Dir}/../zone" ] && [ -r "${Dns_Dir}/../zone" ]; then
+    if [ -d "${Dns_Dir}/../zone" ] && [ -r "${Dns_Dir}/../zone" ] && [ -r /etc/named.conf ]; then
         Dns_Dir=$(dirname "${Dns_Dir}")
         # primary & secondary servers using this script additionally require these ...
         Dns_Dependencies+=(rndc)
@@ -359,14 +359,14 @@ PATH=${Dns_Dir}/bin:${Dns_Dir}/sbin:${PATH}
 #
 
 for Dns_Dependency in ${Dns_Dependencies[@]}; do
+    verbose "Dns_Dependency=${Dns_Dependency}" 7
     [ ${#Dns_Dependency} -eq 0 ] && continue
-    Dns_Dependency=$(type -P "${Dns_Dependency}")
-    verbose "Dns_Dependency=${Dns_Dependency}" 17
-    if [ ! -f "${Dns_Dependency}" ] && [ ! -x "${Dns_Dependency}" ]; then
+    Dns_Dependency_Exec=$(type -P "${Dns_Dependency}")
+    if [ ! -f "${Dns_Dependency_Exec}" ] && [ ! -x "${Dns_Dependency_Exec}" ]; then
         aborting "dependency missing; '${Dns_Dependency}' file not executable"
     fi
 done
-unset Dns_Dependency
+unset Dns_Dependency Dns_Dependency_Exec
 
 #
 # validate BASH_SOURCE
