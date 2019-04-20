@@ -359,6 +359,7 @@ PATH=${Dns_Dir}/bin:${Dns_Dir}/sbin:${PATH}
 #
 
 for Dns_Dependency in ${Dns_Dependencies[@]}; do
+    [ ${#Dns_Dependency} -eq 0 ] && continue
     Dns_Dependency=$(type -P "${Dns_Dependency}")
     verbose "Dns_Dependency=${Dns_Dependency}" 17
     if [ ! -f "${Dns_Dependency}" ] && [ ! -x "${Dns_Dependency}" ]; then
