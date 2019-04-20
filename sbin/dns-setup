@@ -12,27 +12,75 @@ if [ ! -r "${Dns_Source}" ]; then
 fi
 source "${Dns_Source}"
 
+#
+# Functions
+#
+
+function usage() {
+    printf "\nusage: $0 <check|install|headers|reinstall>\n\n"
+    exit 1
+}
+
+#
+# Main
+#
+
+if [ ${#1} -eq 0 ]; then
+    usage
+fi
+
+Setup=1 # false
+
+if [ "$1" == "check" ]; then
+    ACTION="CHECK"
+    Check=0
+    Setup=0
+else
+    Check=1
+fi
+
+if [ "$1" == "install" ]; then
+    Action="INSTALL"
+    Install=0
+    Setup=0
+else
+    Install=1
+fi
+
+if [ "$1" == "headers" ]; then
+    Action="HEADERS"
+    Headers=0
+    Setup=0
+else
+    Headers=1
+fi
+
 if [ "$1" == "reinstall" ]; then
+    Action="REINSTALL"
     Reinstall=0
+    Setup=0
 else
     Reinstall=1
+fi
+
+if [ $Setup -ne 0 ]; then
+    usage
 fi
 
 cd "${Dns_Dir}"
 
 #
-# create secondary configs from primary
+# ensure primary/secondary configs are there & in sync
 #
 
-if [ -f "etc/named.primary.conf" ]; then
-    if [ ! -f "etc/named.secondary.conf" ] || [ $Reinstall -eq 0 ]; then
-        cat "etc/named.primary.conf" | sed -e '/primary/s//secondary/g' > "etc/named.secondary.conf"
-    fi
-fi
-
-if [ -f "etc/template/template.primary.conf" ]; then
-    if [ ! -f "etc/template/template.secondary.conf" ] || [ $Reinstall -eq 0 ]; then
-        cat "etc/template/template.primary.conf" | sed -e '/primary/s//secondary/g' > "etc/template/template.secondary.conf"
+if [ $Install -eq 0 ] || [ $Reinstall -eq 0 ]; then
+    if [ ! -r "${Dns_Dir}/etc/template/template.primary.conf" ]; then
+        aborting "${Dns_Dir}/etc/template/template.primary.conf file not found"
+    else
+        sed "s#primary#secondary#g" "${Dns_Dir}/etc/template/template.primary.conf" > "${Dns_Dir}/etc/template/template.secondary.conf"
+        if [ $? -ne 0 ]; then
+            aborting "failed to sync ${Dns_Dir}/etc/template/template.secondary.conf"
+        fi
     fi
 fi
 
@@ -53,19 +101,33 @@ for Dns_Template in "${Dns_Templates[@]}"; do
     Dns_Named=${Dns_Named/template/named}
 
     if [ -r "${Dns_Template}" ]; then
-        if [ -r "${Dns_Named}" ] && [ $Reinstall -eq 1 ]; then
-            dnsEcho "[FOUND]: ${Dns_Named}"
-        else
-            dnsBackup "${Dns_Named}"
 
-            cp "${Dns_Template}" "${Dns_Named}"
-            if [ $? -eq 0 ]; then
-                dnsEcho "[INSTALLED]: ${Dns_Named}"
+        if [ -r "${Dns_Named}" ]; then
+            if [ $Reinstall -eq 0 ]; then
+                dnsBackup "${Dns_Named}"
+                dnsEcho "[BACKUP]: ${Dns_Named}"
+                cp "${Dns_Template}" "${Dns_Named}"
+                if [ $? -eq 0 ]; then
+                    dnsEcho "[${Action}]: ${Dns_Named}"
+                else
+                    aborting "failed to cp ${Dns_Template} ${Dns_Named}"
+                fi
             else
-                dnsEcho "[FAILED]: ${Dns_Named}"
-                aborting "failed to 'cp \"${Dns_Template}\" \"${Dns_Named}\"'"
+                dnsEcho "[FOUND]: ${Dns_Named}"
+            fi
+        else
+            if [ $Install -eq 0 ] || [ $Reinstall -eq 0 ]; then
+                cp "${Dns_Template}" "${Dns_Named}"
+                if [ $? -eq 0 ]; then
+                    dnsEcho "[${Action}]: ${Dns_Named}"
+                else
+                    aborting "failed to cp ${Dns_Template} ${Dns_Named}"
+                fi
+            else
+                dnsEcho "[MISSING]: ${Dns_Named}"
             fi
         fi
+
     else
         dnsEcho "[MISSING]: ${Dns_Template} file not readable"
         aborting "bug"
@@ -74,7 +136,7 @@ for Dns_Template in "${Dns_Templates[@]}"; do
     unset Dns_Named
 done
 
-if [ $Reinstall -eq 0 ] || [ "$1" == "headers" ]; then
+if [ $Headers -eq 0 ]; then
     echo
     Header_Files=()
     Header_Files+=(${Dns_Templates[@]})
