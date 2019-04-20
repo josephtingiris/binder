@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# check/install/reinstall dns servers ...
+# check/install/reinstall dns servers
 
 # 20190415, joseph.tingiris@gmail.com
 
@@ -11,6 +11,10 @@ if [ ! -r "${Dns_Source}" ]; then
     exit 2
 fi
 source "${Dns_Source}"
+
+#
+# Globals
+#
 
 #
 # Functions

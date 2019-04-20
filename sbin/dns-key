@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# 20181205, jtingiris
+# check/generate dns security (tsig) keys
 
-# https://ftp.isc.org/www/bind/arm95/Bv9ARM.ch04.html#tsig
+# 20181205, jtingiris
 
 Dns_Dir=$(dirname $(dirname "$(readlink -e "$0")"))
 Dns_Source="${Dns_Dir}/bin/dns"
@@ -32,6 +32,8 @@ function Usage() {
 #
 # Main
 #
+
+# https://ftp.isc.org/www/bind/arm95/Bv9ARM.ch04.html#tsig
 
 for DIR in "${Cfg_Dir}" "${Key_Dir}"; do
     if [ ! -d ${DIR} ] || [ ! -w ${DIR} ]; then

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# add/check/delete dns zones ...
+# add/check/delete dns zones
 
 # 20190408, joseph.tingiris@gmail.com
 
@@ -13,7 +13,7 @@ fi
 source "${Dns_Source}"
 
 #
-# global variables
+# Globals
 #
 
 Verbose_Level_Prefix=on
@@ -42,7 +42,7 @@ Dns_Zone_Types+=(master)
 Dns_Zone_Type_Valid=1
 
 #
-# functions
+# Functions
 #
 
 function usage() {
@@ -115,7 +115,9 @@ function usage() {
     exit 1
 }
 
+#
 # Main
+#
 
 Warnings=()
 
