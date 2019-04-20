@@ -98,7 +98,7 @@ if [ ! -f "${Named_Key_File}" ]; then
         Named_Secret=$(cat "${Public_Key_File}" | awk '{print $NF}')
         if [ "${Named_Secret}" != "" ]; then
             echo "//" > ${Named_Key_File}
-            echo "// ${Named_Key_File}" >> ${Named_Key_File}
+            echo "// $(basename ${Named_Key_File})" >> ${Named_Key_File}
             echo "//" >> ${Named_Key_File}
             echo >> ${Named_Key_File}
             echo "key \"${Key}.key\" {" >> "${Named_Key_File}"
