@@ -38,7 +38,7 @@ Dns_Dependencies+=(nslookup)
 Dns_Dependencies+=(nsupdate)
 Dns_Dependencies+=(sed)
 
-# supported records
+# supported records; see nsupdate -T
 Dns_Records=()
 Dns_Records+=(A)
 Dns_Records+=(AAAA)
@@ -108,7 +108,7 @@ function dnsBackup() {
     fi
 
     if [ ! -w "${backup_dir}" ]; then
-            aborting "'${backup_dir}' directory not writable"
+        aborting "'${backup_dir}' directory not writable"
     fi
 
     verbose "DEBUG: backup_dir=${backup_dir}"
@@ -192,15 +192,18 @@ function dnsConfigZone() {
     while [ ${config_key_dots} -gt 0 ]; do
         verbose "DEBUG: config_key_dots=${config_key_dots} (${config_key})"
         config_data=$(egrep -e "^Dns_Zone[=|[:space:]=|[:space:]=[:space:]]${config_key}," "${config_file}" 2> /dev/null | head -1 | awk -F\# '{print $1}' | sed -nEe 's#.*=(.*).*#\1#p' 2> /dev/null | sed -e 's#^[[:space:]]+*##g' -e 's#[[:space:]]+*$##g' 2> /dev/null)
-            config_data_rc=$?
-                    if [ ${#config_data} -gt 0 ]; then
-                        break;
-                    fi
-                    config_key=${config_key#*.}
-                    let config_key_dots=${config_key_dots}-1
-                done
 
-                echo $config_data
+        # set rc
+        config_data_rc=$?
+
+        if [ ${#config_data} -gt 0 ]; then
+            break;
+        fi
+        config_key=${config_key#*.}
+        let config_key_dots=${config_key_dots}-1
+    done
+
+    echo $config_data
 
     # return pipefail result code
     return $config_data_rc
@@ -242,7 +245,7 @@ function dnsEcho() {
 
 # output a 'usage' message and exit with a non-zero return code
 function usage() {
-    printf "\nusage: %s <action> <record> <name> <data; eg. cname, ip, or txt> [ttl[:priority]] [keyfile]\n\n" "${0}"
+    printf "\nusage: %s <action> <record> <name> <data; eg. cname, ip, or txt> [-t <ttl>] [-p <priority>] [-s <server>] [-k <keyfile>] [--help]\n\n" "${0}"
 
     if [ "${Dns_Actions}" != "" ]; then
         printf "supported actions:\n\n"
@@ -329,11 +332,10 @@ fi
 
 if ! Dns_Dir=$(dnsConfig Dns_Dir); then
     Dns_Dir=$(dirname "$(readlink -e "$0")")
-    if [ -d "${Dns_Dir}/../zone" ] && [ -r "${Dns_Dir}/../zone" ] && [ -r /etc/named.conf ]; then
-        Dns_Dir=$(dirname "${Dns_Dir}")
-        # primary & secondary servers using this script additionally require these ...
-        Dns_Dependencies+=(rndc)
-    fi
+fi
+
+if [ -d "${Dns_Dir}/../zone" ] && [ -r "${Dns_Dir}/../zone" ]; then
+    Dns_Dir=$(dirname "${Dns_Dir}")
 fi
 
 if [ ${#Dns_Dir} -eq 0 ]; then
@@ -348,6 +350,10 @@ if [ -f "${Dns_Dir}/etc/named.primary.conf" ] && [ -f "${Dns_Dir}/etc/named.seco
     if [ ${#Dns_Config_File} -eq 0 ] && [ -r "${Dns_Dir}/etc/dns.conf" ]; then
         Dns_Config_File="${Dns_Dir}/etc/dns.conf"
     fi
+    if [ -r /etc/named.conf ]; then
+        # primary & secondary servers using this script additionally require these ...
+        Dns_Dependencies+=(rndc)
+    fi
 fi
 
 verbose "NOTICE: Dns_Dir=${Dns_Dir}"
@@ -359,7 +365,7 @@ PATH=${Dns_Dir}/bin:${Dns_Dir}/sbin:${PATH}
 #
 
 for Dns_Dependency in ${Dns_Dependencies[@]}; do
-    verbose "Dns_Dependency=${Dns_Dependency}" 7
+    verbose "Dns_Dependency=${Dns_Dependency}" 17
     [ ${#Dns_Dependency} -eq 0 ] && continue
     Dns_Dependency_Exec=$(type -P "${Dns_Dependency}")
     if [ ! -f "${Dns_Dependency_Exec}" ] && [ ! -x "${Dns_Dependency_Exec}" ]; then
@@ -398,6 +404,8 @@ for Dns_Action in ${Dns_Actions[@]}; do
 done
 if [ ${Dns_Action_Valid} -eq 1 ]; then
     usage "invalid action '${1}'"
+else
+    shift
 fi
 verbose "INFO: Dns_Action=${Dns_Action}" 5
 
@@ -407,31 +415,66 @@ verbose "INFO: Dns_Action=${Dns_Action}" 5
 
 Dns_Record_Valid=1
 for Dns_Record in ${Dns_Records[@]}; do
-    if [ "${2^^}" == "${Dns_Record}" ]; then
+    if [ "${1^^}" == "${Dns_Record}" ]; then
         Dns_Record_Valid=0
         break
     fi
 done
 if [ ${Dns_Record_Valid} -eq 1 ]; then
-    usage "invalid record '${2}'"
+    usage "invalid record '${1}'"
+else
+    shift
 fi
 verbose "Dns_Record=${Dns_Record}" 5
 
 #
-# set default zone?
+# validate name; set zone & fqdn
 #
 
-Dns_Zone_Default=$(dnsConfig Dns_Zone_Default | sed -e 's#\.\.*#\.#g' -e 's#^\.##g' -e 's#\.$##g');
-if [ ${#Dns_Zone_Default} -eq 0 ]; then
-    verbose "Dns_Zone_Default is NOT set, using localdomain" 4
-    Dns_Zone_Default=localdomain
+Dns_Name=$(echo "$1" | sed -e 's#\.\.*#\.#g' -e 's#^\.##g' -e 's#\.$##g');
+
+if [ ${#Dns_Name} -eq 0 ]; then
+    aborting "invalid dns name '$1'"
+else
+    shift
+fi
+
+Dns_Name_Dots="${Dns_Name//[^\.]}"
+Dns_Name_Dots=${#Dns_Name_Dots}
+
+if [ ${Dns_Name_Dots} -eq 0 ]; then
+    # set default zone?
+    Dns_Zone_Default=$(dnsConfig Dns_Zone_Default | sed -e 's#\.\.*#\.#g' -e 's#^\.##g' -e 's#\.$##g');
+    if [ ${#Dns_Zone_Default} -eq 0 ]; then
+        verbose "Dns_Zone_Default is NOT set, using localdomain" 4
+        Dns_Zone_Default=localdomain
+    fi
+
+    if [ ${#Dns_Zone_Default} -gt 0 ]; then
+        Dns_FQDN=${Dns_Name}.${Dns_Zone_Default}
+    else
+        Dns_FQDN="${Dns_Name}"
+    fi
+else
+    Dns_FQDN="${Dns_Name}"
+fi
+
+if [ "${Dns_Name}" != "${Dns_FQDN}" ]; then
+    verbose "Dns_Name=${Dns_Name} (${Dns_Name_Dots} dots)" 5
+fi
+
+if [ ${#Dns_FQDN} -eq 0 ]; then
+    aborting "unable to determine fully qualified domain name"
+else
+    verbose "Dns_FQDN=$Dns_FQDN" 5
 fi
 
 #
 # validate data
 #
 
-Dns_Data=$(echo "$4")
+Dns_Data="$1"
+shift
 
 if [ "${Dns_Record}" == "A" ]; then
     if ! (ipcalc -4 "${Dns_Data}" &> /dev/null); then
@@ -460,70 +503,131 @@ fi
 verbose "Dns_Data=$Dns_Data" 5
 
 #
-# validate & set ttl:priority
+# parse options
 #
 
-Dns_Data_TTL=${5%%:*}
-Dns_Data_Priority=${5##*:}
+# translate long options to short
+for arg; do
+    quote=""
+    case "$arg" in
+        -help|--help)
+            args="${args}-h "
+            ;;
+        -key|--key|-keyfile|--keyfile)
+            args="${args}-k "
+            ;;
+        -priority|--priority)
+            args="${args}-p "
+            ;;
+        -server|--server)
+            args="${args}-s "
+            ;;
+        -ttl|--ttl)
+            args="${args}-t "
+            ;;
+        -view|--view)
+            args="${args}-v "
+            ;;
+        *)
+            [[ "${arg:0:1}" == "-" ]] || quote="\""
+            args="${args}${quote}${arg}${quote} "
+            ;;
+    esac
+done
+eval set -- $args
 
-if [ "${Dns_Data_TTL}" == "${Dns_Data_Priority}" ]; then
-    Dns_Data_Priority=10
-fi
+# process short options
+while getopts ":hk:p:s:t:v:" option; do
+    case "${option}" in
+        h)
+            usage
+            ;;
+        k)
+            Dns_Server_Keyfile=${OPTARG}
+            ;;
+        p)
+            Dns_Data_Priority=${OPTARG}
+            ;;
+        s)
+            Dns_Server=${OPTARG}
+            ;;
+        t)
+            Dns_Data_TTL=${OPTARG}
+            ;;
+        t)
+            Dns_View=${OPTARG}
+            ;;
+        :)
+            aborting "option '-${OPTARG}' requires an argument"
+            ;;
+        *)
+            aborting "unknown option '${@}'"
+            ;;
+    esac
+done
+
+#
+# validate priority
+#
 
 if [[ ! ${Dns_Data_Priority} =~ ^[0-9]+$ ]]; then
     Dns_Data_Priority=10
 fi
 
+verbose "Dns_Data_Priority=$Dns_Data_Priority" 5
+
+#
+# validate ttl
+#
+
 if [[ ! ${Dns_Data_TTL} =~ ^[0-9]+$ ]]; then
     Dns_Data_TTL=60
-fi
-
-if [ "${Dns_Record}" == "MX" ] || [ "${Dns_Record}" == "NS" ]; then
-    verbose "Dns_Data_Priority=$Dns_Data_Priority" 5
 fi
 
 verbose "Dns_Data_TTL=$Dns_Data_TTL" 5
 
 #
-# validate name; set zone & fqdn
+# (attempt to) obtain dns zone config
 #
 
-Dns_Name=$(echo "$3" | sed -e 's#\.\.*#\.#g' -e 's#^\.##g' -e 's#\.$##g');
-Dns_Name_Dots="${Dns_Name//[^\.]}"
-Dns_Name_Dots=${#Dns_Name_Dots}
+if [ ${#Dns_Server} -eq 0 ]; then
+    if Dns_Zone_Config=$(dnsConfigZone ${Dns_FQDN} ${Dns_View}); then
+        verbose "Dns_Zone_Config=${Dns_Zone_Config}" 7
 
-if [ ${#Dns_FQDN} -eq 0 ]; then
-    if [ ${Dns_Name_Dots} -eq 0 ]; then
-        if [ ${#Dns_Zone_Default} -gt 0 ]; then
-            Dns_FQDN=${Dns_Name}.${Dns_Zone_Default}
-        else
-            Dns_FQDN="${Dns_Name}"
-        fi
+        Dns_Zone=${Dns_Zone_Config%%,*}
+
+        Dns_Server=${Dns_Zone_Config#*,}
+        Dns_Server=${Dns_Server#*,}
+        Dns_Server=${Dns_Server%%,*}
     else
-        Dns_FQDN="${Dns_Name}"
+        verbose "WARNING: Dns_Zone for '${Dns_FQDN}', view '${Dns_View}' not configured in '${Dns_Config_File}'"
+    fi
+
+    if [ ${#Dns_Server_Keyfile} -eq 0 ]; then
+        # todo: needs work
+        Dns_Server_Keyfile=${Dns_Zone_Config}
     fi
 fi
-
-if [ "${Dns_Name}" != "${Dns_FQDN}" ]; then
-    verbose "Dns_Name=${Dns_Name} (${Dns_Name_Dots} dots)" 5
-fi
-
-verbose "Dns_FQDN=$Dns_FQDN" 5
-
-if ! Dns_Zone_Config=$(dnsConfigZone ${Dns_FQDN}); then
-    aborting "Dns_Zone for '${Dns_FQDN}' not configured in '${Dns_Config_File}'"
-fi
-verbose "Dns_Zone_Config=${Dns_Zone_Config}" 7
-
-Dns_Zone=${Dns_Zone_Config%%,*}
-verbose "Dns_Zone=$Dns_Zone" 5
-
-Dns_Server=${Dns_Zone_Config#*,}
-Dns_Server=${Dns_Server#*,}
-Dns_Server=${Dns_Server%%,*}
 verbose "Dns_Server=$Dns_Server" 5
 
+if [ ${#Dns_Server_Keyfile} -eq 0 ]; then
+    Keyfiles=()
+fi
+
+verbose "Dns_Server_Keyfile=$Dns_Server_Keyfile" 5
+
 verbose "Dns_Zone_Default=${Dns_Zone_Default}" 5
+
+verbose "Dns_Zone=$Dns_Zone" 5
+
+#
+# validate view
+#
+
+verbose "Dns_View=$Dns_View" 5
+
+
+
 usage
 
 exit
