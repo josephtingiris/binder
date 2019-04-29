@@ -1,4 +1,5 @@
 dns.conf
+krb5.conf
 named.primary.conf
 named.primary.private.clients.acl.conf
 named.primary.private.master.zones.conf
