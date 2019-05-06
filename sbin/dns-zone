@@ -325,10 +325,10 @@ if [ "${Zone}" == "dns.conf" ]; then
             if [ -f "${Dns_Dir}/etc/named.forward.zones.conf" ] && [ -w "${Dns_Dir}/etc/named.forward.zones.conf" ]; then
                 # not done to a point of 'safe'
                 for zz in $(cat "${Dns_Dir}/etc/named.forward.zones.conf" | egrep -ve "//|\#" | egrep -e '^zone' | awk '{print $2}' | sed -e "s#\"##g"); do
-                    echo "deleting '$zz' from ${Dns_Conf}"
+                    echo "deleting '$zz' from ${Dns_Conf} ???"
 
-                    # remove it with sed
-                    sed -i "/^Dns_Zone=${zz}/D" "${Dns_Conf}"
+                    # remove it with sed ?? todo; review
+                    #sed -i "/^Dns_Zone=${zz}/D" "${Dns_Conf}"
                 done
             fi
         fi
@@ -363,20 +363,18 @@ if [ "${Zone}" == "dns.conf" ]; then
         while read Dns_Zone_Line; do
             unset Zone Zone_View
 
+            declare -l Zone_Arpa
+            Zone_Arpa=$(echo "${Dns_Zone_Line}" | awk -F, '{print $1}')
+
             declare -l Zone
-            Zone=${Dns_Zone_Line%%,*}
-            Zone="${Zone#"${Zone%%[![:space:]]*}"}"
-            Zone="${Zone%"${Zone##*[![:space:]]}"}"
+            Zone=$(echo "${Dns_Zone_Line}" | awk -F, '{print $2}')
 
             if [ ${#Zone} -eq 0 ]; then
                 aborting "dns.conf zone '${GREP}' is empty"
             fi
 
             declare -l Zone_View
-            Zone_View=${Dns_Zone_Line#*,}
-            Zone_View=${Zone_View%%,*}
-            Zone_View="${Zone_View#"${Zone_View%%[![:space:]]*}"}"
-            Zone_View="${Zone_View%"${Zone_View##*[![:space:]]}"}"
+            Zone_View=$(echo "${Dns_Zone_Line}" | awk -F, '{print $2}')
 
             if [ "${Zone_View}" != "${View}" ]; then
                 continue
@@ -401,7 +399,7 @@ if [ "${Zone}" == "dns.conf" ]; then
             fi
 
             echo
-        done <<< "$(grep ^Dns_Zone= "${Dns_Conf}" 2> /dev/null | grep ${GREP} | awk -F= '{print $NF}' | awk -F\# '{print $1}')"
+        done <<< "$(grep ^Dns_Zone= "${Dns_Conf}" 2> /dev/null | grep ${GREP} | awk -F= '{print $NF}' | awk -F\# '{print $1}' sed -e '/[[:space:]]/s///g')"
 
     # Views complete
     done
