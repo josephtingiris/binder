@@ -122,6 +122,20 @@ function usage() {
 Warnings=()
 
 #
+# validate dns.conf
+#
+
+if [ -r /etc/dns.conf ]; then
+    Dns_Conf="/etc/dns.conf"
+else
+    if [ -r ${Dns_Dir}/etc/dns.conf ]; then
+        Dns_Conf="${Dns_Dir}/etc/dns.conf"
+    else
+        aborting "dns.conf file not readable"
+    fi
+fi
+
+#
 # validate /etc/named.conf
 #
 
@@ -150,7 +164,7 @@ else
     usage "invalid action '${1}'"
 fi
 
-verbose "INFO: Dns_Action=${Dns_Action}"
+verbose "Dns_Action=${Dns_Action}" ${Verbose_Level}
 
 #
 # validate zone name
@@ -178,103 +192,108 @@ else
     Zone_Dir="zone"
 fi
 
-#
-# validate server type
-#
 
-for Dns_Server in ${Dns_Servers[@]}; do
-    if [ "${1,,}" == "${Dns_Server}" ]; then
-        Dns_Server_Valid=0
-        break
-    fi
-done
+if [ "${Zone}" != "dns.conf" ]; then
 
-if [ ${Dns_Server_Valid} -eq 0 ]; then
-    Servers=(${Dns_Server})
-    shift
-else
-    if [ ${#1} -eq 0 ]; then
-        if [ "${Dns_Action}" == "check" ]; then
-            Servers=(${Dns_Servers[@]})
-        else
-            Servers=(primary secondary)
+    #
+    # validate server type
+    #
+
+    for Dns_Server in ${Dns_Servers[@]}; do
+        if [ "${1,,}" == "${Dns_Server}" ]; then
+            Dns_Server_Valid=0
+            break
         fi
+    done
+
+    if [ ${Dns_Server_Valid} -eq 0 ]; then
+        Servers=(${Dns_Server})
+        shift
     else
-        if [ "${1}" == "primary" ] || [ "${1}" == "secondary" ] || [ "${1}" == "shared" ]; then
-            Dns_Server="${1}"
-            Servers=(${Dns_Server})
-            shift
+        if [ ${#1} -eq 0 ]; then
+            if [ "${Dns_Action}" == "check" ]; then
+                Servers=(${Dns_Servers[@]})
+            else
+                Servers=(primary secondary)
+            fi
         else
-            usage "invalid server '${1}'"
+            if [ "${1}" == "primary" ] || [ "${1}" == "secondary" ] || [ "${1}" == "shared" ]; then
+                Dns_Server="${1}"
+                Servers=(${Dns_Server})
+                shift
+            else
+                usage "invalid server '${1}'"
+            fi
         fi
     fi
-fi
 
-unset Dns_Server
+    unset Dns_Server
 
-verbose "INFO: Servers=${Servers[@]}"
+    verbose "Servers=${Servers[@]}" ${Verbose_Level}
 
-#
-# validate view name
-#
+    #
+    # validate view name
+    #
 
-for Dns_View in ${Dns_Views[@]}; do
-    if [ "${1,,}" == "${Dns_View}" ]; then
-        Dns_View_Valid=0
-        break
-    fi
-done
+    for Dns_View in ${Dns_Views[@]}; do
+        if [ "${1,,}" == "${Dns_View}" ]; then
+            Dns_View_Valid=0
+            break
+        fi
+    done
 
-if [ ${Dns_View_Valid} -eq 0 ]; then
-    Views=(${Dns_View})
-    shift
-else
-    if [ ${#1} -eq 0 ]; then
-        Views=(${Dns_Views[@]})
+    if [ ${Dns_View_Valid} -eq 0 ]; then
+        Views=(${Dns_View})
+        shift
     else
-        usage "invalid view '${1}'"
-    fi
-fi
-
-unset Dns_View
-
-verbose "INFO: Views=${Views[@]}"
-
-#
-# validate zone type
-#
-
-for Dns_Zone_Type in ${Dns_Zone_Types[@]}; do
-    if [ "${1,,}" == "${Dns_Zone_Type}" ]; then
-        Dns_Zone_Type_Valid=0
-        break
-    fi
-done
-
-if [ ${Dns_Zone_Type_Valid} -eq 0 ]; then
-    Zone_Types=(${Dns_Zone_Type})
-    shift
-else
-    if [ ${#1} -eq 0 ]; then
-        if [ "${Dns_Action}" == "check" ]; then
-            Zone_Types=(${Dns_Zone_Types[@]})
+        if [ ${#1} -eq 0 ]; then
+            Views=(${Dns_Views[@]})
         else
-            Zone_Types=(master)
+            usage "invalid view '${1}'"
         fi
+    fi
+
+    unset Dns_View
+
+    verbose "Views=${Views[@]}" ${Verbose_Level}
+
+    #
+    # validate zone type
+    #
+
+    for Dns_Zone_Type in ${Dns_Zone_Types[@]}; do
+        if [ "${1,,}" == "${Dns_Zone_Type}" ]; then
+            Dns_Zone_Type_Valid=0
+            break
+        fi
+    done
+
+    if [ ${Dns_Zone_Type_Valid} -eq 0 ]; then
+        Zone_Types=(${Dns_Zone_Type})
+        shift
     else
-        if [ "${1}" == "forward" ] || [ "${1}" == "master" ]; then
-            Dns_Zone_Type="${1}"
-            Zone_Types=(${Dns_Zone_Type})
-            shift
+        if [ ${#1} -eq 0 ]; then
+            if [ "${Dns_Action}" == "check" ]; then
+                Zone_Types=(${Dns_Zone_Types[@]})
+            else
+                Zone_Types=(master)
+            fi
         else
-            usage "invalid zone type '${1}'"
+            if [ "${1}" == "forward" ] || [ "${1}" == "master" ]; then
+                Dns_Zone_Type="${1}"
+                Zone_Types=(${Dns_Zone_Type})
+                shift
+            else
+                usage "invalid zone type '${1}'"
+            fi
         fi
     fi
+
+    unset Dns_Zone_Type
+
+    verbose "Zone_Types=${Zone_Types[@]}" ${Verbose_Level}
+
 fi
-
-unset Dns_Zone_Type
-
-verbose "INFO: Zone_Types=${Zone_Types[@]}"
 
 #
 # set dynamic variable values
@@ -308,46 +327,6 @@ fi
 
 if [ "${Zone}" == "dns.conf" ]; then
 
-    if [ -r /etc/dns.conf ]; then
-        Dns_Conf="/etc/dns.conf"
-    else
-        if [ -r ${Dns_Dir}/etc/dns.conf ]; then
-            Dns_Conf="${Dns_Dir}/etc/dns.conf"
-        else
-            aborting "dns.conf file not readable"
-        fi
-    fi
-
-    # convert forward.zones to dns.conf single line format
-    if [ "${Views}" == "forward" ]; then
-
-        if [ "${Dns_Action}" == "delete" ] || [ "${Dns_Action}" == "force" ]; then
-            if [ -f "${Dns_Dir}/etc/named.forward.zones.conf" ] && [ -w "${Dns_Dir}/etc/named.forward.zones.conf" ]; then
-                # not done to a point of 'safe'
-                for zz in $(cat "${Dns_Dir}/etc/named.forward.zones.conf" | egrep -ve "//|\#" | egrep -e '^zone' | awk '{print $2}' | sed -e "s#\"##g"); do
-                    echo "deleting '$zz' from ${Dns_Conf} ???"
-
-                    # remove it with sed ?? todo; review
-                    #sed -i "/^Dns_Zone=${zz}/D" "${Dns_Conf}"
-                done
-            fi
-        fi
-
-        if [ "${Dns_Action}" == "add" ] || [ "${Dns_Action}" == "force" ]; then
-            if [ -f "${Dns_Dir}/etc/named.forward.zones.conf" ] && [ -w "${Dns_Dir}/etc/named.forward.zones.conf" ]; then
-                cat "${Dns_Dir}/etc/named.forward.zones.conf" | egrep -ve '//|#' | egrep -e '^zone|forwarders' | sed ':a;N;$!ba;s/{\n/ /g' | sed -nEe 's#^zone "(.*).*"(.*).*\{#\1#p' | sed -e 's# };$##g' | awk '{zone=$1; $1=""; print "Dns_Zone="zone", forward,"$0","}' >> "${Dns_Conf}"
-
-                fi
-            fi
-
-        # sort
-        sort -uV "${Dns_Conf}" -o "${Dns_Conf}"
-        sort -t, -k2 "${Dns_Conf}" -o "${Dns_Conf}"
-        cat "${Dns_Conf}"
-
-        exit
-    fi
-
     # this allows an extra (undocumented) argument (for dns.conf searches)
     if [ ${#1} -eq 0 ]; then
         GREP="."
@@ -355,56 +334,63 @@ if [ "${Zone}" == "dns.conf" ]; then
         GREP="${1}"
     fi
 
-    verbose "INFO: Views=${Views[@]}"
-    for View in ${Views[@]}; do
+    while read Dns_Zone_Line; do
 
-        verbose "DEBUG: View=${View}"
+        verbose "Dns_Zone_Line=${Dns_Zone_Line}" $((${Verbose_Level}+10))
 
-        while read Dns_Zone_Line; do
-            unset Zone Zone_View
+        declare -l Dns_Zone_Arpa
+        Dns_Zone_Arpa=$(echo "${Dns_Zone_Line}" | awk -F, '{print $1}')
+        if [ "${Dns_Zone_Arpa}" == "*" ] || [ "${Dns_Zone_Arpa,,}" == "default" ]; then
+            Dns_Zone_Arpa=""
+        fi
+        verbose "Dns_Zone_Arpa=${Dns_Zone_Arpa}" $((${Verbose_Level}+10))
 
-            declare -l Zone_Arpa
-            Zone_Arpa=$(echo "${Dns_Zone_Line}" | awk -F, '{print $1}')
-
-            declare -l Zone
-            Zone=$(echo "${Dns_Zone_Line}" | awk -F, '{print $2}')
-
-            if [ ${#Zone} -eq 0 ]; then
-                aborting "dns.conf zone '${GREP}' is empty"
+        declare -l Dns_Zone
+        if [ ${#Dns_Zone_Arpa} -gt 0 ]; then
+            Dns_Zone=${Dns_Zone_Arpa}
+        else
+            Dns_Zone=$(echo "${Dns_Zone_Line}" | awk -F, '{print $2}')
+            if [ "${Dns_Zone}" == "*" ] || [ "${Dns_Zone,,}" == "default" ]; then
+                Dns_Zone=""
             fi
+        fi
+        verbose "Dns_Zone='${Dns_Zone}'" $((${Verbose_Level}+10))
 
-            declare -l Zone_View
-            Zone_View=$(echo "${Dns_Zone_Line}" | awk -F, '{print $2}')
+        if [ ${#Dns_Zone} -eq 0 ] && [ ${#Dns_Zone_Arpa} -gt 0 ]; then
+            Dns_Zone=${Dns_Zone_Arpa}
+        fi
 
-            if [ "${Zone_View}" != "${View}" ]; then
-                continue
-            fi
+        if [ ${#Dns_Zone} -eq 0 ]; then
+            aborting "dns.conf zone '${Dns_Zone_Arpa}' '${GREP}' is empty"
+        fi
 
-            verbose "DEBUG: Dns_Zone_Line=${Dns_Zone_Line}"
+        declare -l Dns_Zone_View
+        Dns_Zone_View=$(echo "${Dns_Zone_Line}" | awk -F, '{print $3}')
 
-            verbose "INFO: Zone='${Zone}'"
-            verbose "INFO: Zone_View='${Zone_View}'"
+        verbose "Dns_Zone_View='${Dns_Zone_View}'" $((${Verbose_Level}+10))
 
-            printf "\n"
-            printf "Zone = ${Zone},"
-            printf " Action = ${Dns_Action},"
-            printf " View = ${View}"
-            printf "\n\n"
+        if [ "${Dns_Zone_View}" == "forward" ]; then
+            Dns_Servers=(shared)
+            Dns_Zone_View="private"
+            Dns_Zone_Type="forward"
+        else
+            Dns_Servers=(primary secondary)
+            Dns_Zone_Type="master"
+        fi
 
-            $0 "${Dns_Action}" "${Zone}" "${Zone_View}"
+        for Dns_Server in ${Dns_Servers[@]}; do
+            $0 "${Dns_Action}" "${Dns_Zone}" "${Dns_Server}" "${Dns_Zone_View}" "${Dns_Zone_Type}"
             if [ $? -ne 0 ]; then
                 if [ "${Dns_Action}" != "check" ]; then
-                    aborting "zone '${Zone}', view '${Zone_View}', failed $0 ${Dns_Action}"
+                    aborting "dns zone '${Dns_Zone}', view '${Dns_Zone_View}', failed $0 ${Dns_Action}"
                 fi
             fi
+        done
 
-            echo
-        done <<< "$(grep ^Dns_Zone= "${Dns_Conf}" 2> /dev/null | grep ${GREP} | awk -F= '{print $NF}' | awk -F\# '{print $1}' sed -e '/[[:space:]]/s///g')"
+        echo
+    done <<< "$(grep ^Dns_Zone= "${Dns_Conf}" 2> /dev/null | grep ${GREP} | awk -F= '{print $NF}' | awk -F"#" '{print $1}' | sed -e '/[[:space:]]/s///g' | sort)"
 
-    # Views complete
-    done
-
-    exit $?
+    exit
 fi
 
 #
@@ -417,16 +403,16 @@ for Zone_Type in ${Zone_Types[@]}; do
 
         for View in ${Views[@]}; do
 
-            printf "\n"
-            printf "Zone = ${Zone},"
-            printf " Zone_Dir = ${Zone_Dir},"
-            printf " Action = ${Dns_Action},"
-            printf " Server = ${Server},"
-            printf " View = ${View},"
-            printf " Zone_Type = ${Zone_Type},"
-            printf " Origin = ${Origin},"
-            printf " Soa = ${Soa}"
-            printf "\n\n"
+            #printf "\n"
+            #printf "Zone = ${Zone},"
+            #printf " Zone_Dir = ${Zone_Dir},"
+            #printf " Action = ${Dns_Action},"
+            #printf " Server = ${Server},"
+            #printf " View = ${View},"
+            #printf " Zone_Type = ${Zone_Type},"
+            #printf " Origin = ${Origin},"
+            #printf " Soa = ${Soa}"
+            #printf "\n\n"
 
 
             #
@@ -435,12 +421,13 @@ for Zone_Type in ${Zone_Types[@]}; do
 
 
             Template_Zones_Conf="${Dns_Dir}/etc/template/stencil.${Server}.${View}.${Zone_Type}.zones.conf"
-            Zones_Conf="${Dns_Dir}/etc/named.${Server}.${View}.${Zone_Type}.zones.conf"
+            Zones_Conf_Basename="named.${Server}.${View}.${Zone_Type}.zones.conf"
+            Zones_Conf="${Dns_Dir}/etc/${Zones_Conf_Basename}"
 
             Zones_Conf_Exists=1 # false
 
             if [ ! -r "${Template_Zones_Conf}" ]; then
-                verbose "ALERT: ${Template_Zones_Conf}' file not readable\n"
+                dnsAlert "ALERT: ${Template_Zones_Conf}' file not readable\n"
                 if [ "${Dns_Action}" != "check" ]; then
                     continue
                 fi
@@ -448,7 +435,7 @@ for Zone_Type in ${Zone_Types[@]}; do
 
             if [ -f "${Zones_Conf}" ]; then
                 if [ ! -w "${Zones_Conf}" ]; then
-                    verbose "ALERT: ${Zones_Conf}' file not writable\n"
+                    dnsAlert "ALERT: ${Zones_Conf}' file not writable\n"
                     if [ "${Dns_Action}" != "check" ]; then
                         continue
                     fi
@@ -462,15 +449,22 @@ for Zone_Type in ${Zone_Types[@]}; do
             fi
 
             if [ ${Zones_Conf_Exists} -eq 0 ]; then
-                [ "${Dns_Action}" != "delete" ] && dnsEcho "[EXISTS]:[${Server}][${View}]=(${Zone}) ${Zones_Conf}"
+                if [ "${Dns_Action}" != "delete" ]; then
+                    #dnsEcho "[EXISTS]:[${Server}][${View}]=(${Zone}) ${Zones_Conf}"
+                    dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Zones_Conf_Basename}=EXISTS"
+                fi
 
                 if [ "${Dns_Action}" == "add" ] || [ "${Dns_Action}" == "delete" ] || [ "${Dns_Action}" == "force" ]; then
                     if dnsBackup "${Zones_Conf}"; then
-                        dnsEcho "[BACKUP]:[${Server}][${View}]=(${Zone}) ${Zones_Conf}"
+                        #dnsEcho "[BACKUP]:[${Server}][${View}]=(${Zone}) ${Zones_Conf}"
+                        dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Zones_Conf_Basename}=BACKUP"
                     fi
                 fi
             else
-                [ "${Dns_Action}" != "add" ] && dnsEcho "[NOT FOUND]:[${Server}][${View}]=(${Zone}) ${Zones_Conf}"
+                if [ "${Dns_Action}" != "add" ]; then
+                    #dnsEcho "[NOT FOUND]:[${Server}][${View}]=(${Zone}) ${Zones_Conf}"
+                    dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Zones_Conf_Basename}=NOT FOUND"
+                fi
             fi
 
             if [ "${Dns_Action}" == "delete" ] || [ "${Dns_Action}" == "force" ]; then
@@ -485,7 +479,7 @@ for Zone_Type in ${Zone_Types[@]}; do
                     [ $Add_Rc -eq 0 ] && sed -i -e '1{/^$/d}' -e '${/^$/d}' "${Zones_Conf}"
                     Add_Rc=$?
                     if [ $Add_Rc -eq 0 ]; then
-                        dnsEcho "[REMOVE]:[${Server}][${View}]=(${Zone}) ${Zones_Conf}"
+                        dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Zones_Conf_Basename}=REMOVE"
                         Zones_Conf_Exists=1
                     else
                         aborting "failed to remove '${Zone}' from ${Zones_Conf}"
@@ -494,13 +488,32 @@ for Zone_Type in ${Zone_Types[@]}; do
             fi
 
             if [ "${Dns_Action}" == "add" ] || [ "${Dns_Action}" == "force" ]; then
+
+                #
+                # get forward servers
+                #
+
+                if [ "${Zone_Type}" == "forward" ]; then
+                    Dns_Zone_Config=$(dnsZoneConfig "${Zone}")
+                    if [ ${#Dns_Zone_Config} -eq 0 ]; then
+                        dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:$(basename ${Template_Zones_Conf})=CONFIG MISSING"
+                        aborting
+                    fi
+                    Zone_Server=$(echo "$Dns_Zone_Config" | awk -F, '{print $4}' | sed -e "s#;#; #g")
+                    if [ ${#Zone_Server} -eq 0 ]; then
+                        dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:$(basename ${Template_Zones_Conf})=SERVER MISSING"
+                        aborting
+                    fi
+                fi
+
                 if [ ${Zones_Conf_Exists} -eq 1 ]; then
-                    dnsEcho "[TEMPLATE]:[${Server}][${View}]=(${Zone}) ${Template_Zones_Conf}"
+                    #dnsEcho "[TEMPLATE]:[${Server}][${View}]=(${Zone}) ${Template_Zones_Conf}"
+                    dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:$(basename ${Template_Zones_Conf})=TEMPLATE"
 
                     Add_Rc=0
                     [ $Add_Rc -eq 0 ] && echo >> "${Zones_Conf}"
                     Add_Rc=$?
-                    [ $Add_Rc -eq 0 ] && sed -e "s#++ORIGIN++#${Origin}#g" -e "s#++SERIAL++#${Serial}#g" -e "s#++SOA++#${Soa}#g" -e "s#++VIEW++#${View}#g" -e "s#++ZONE++#${Zone}#g" -e "s#++ZONE_DIR++#${Zone_Dir}#g" "${Template_Zones_Conf}" >> "${Zones_Conf}"
+                    [ $Add_Rc -eq 0 ] && sed -e "s#++ORIGIN++#${Origin}#g" -e "s#++SERIAL++#${Serial}#g" -e "s#++SERVER++#${Zone_Server}#g" -e "s#++SOA++#${Soa}#g" -e "s#++VIEW++#${View}#g" -e "s#++ZONE++#${Zone}#g" -e "s#++ZONE_DIR++#${Zone_Dir}#g" "${Template_Zones_Conf}" >> "${Zones_Conf}"
                     if [ "${Comment}" != "" ]; then
                         [ $Add_Rc -eq 0 ] && sed -i -e "s#++COMMENT++#// ${Comment}#g" ${Zones_Conf}
                     else
@@ -509,12 +522,15 @@ for Zone_Type in ${Zone_Types[@]}; do
                     Add_Rc=$?
                     [ $Add_Rc -eq 0 ] && sed -i '/^$/N;/^\n$/D' "${Zones_Conf}"
                     Add_Rc=$?
+                    [ $Add_Rc -eq 0 ] && sed -i -e "s/;[[:space:]][[:space:]]*/; /g" "${Zones_Conf}"
+                    Add_Rc=$?
                     [ $Add_Rc -eq 0 ] && sed -i -e '1{/^[[:space:]]*$/d}' -e '${/^[[:space:]]*$/d}' "${Zones_Conf}"
                     Add_Rc=$?
                     [ $Add_Rc -eq 0 ] && sed -i -e '1{/^$/d}' -e '${/^$/d}' "${Zones_Conf}"
                     Add_Rc=$?
                     if [ $Add_Rc -eq 0 ]; then
-                        dnsEcho "[ADD]:[${Server}][${View}]=(${Zone}) ${Zones_Conf}"
+                        #dnsEcho "[ADD]:[${Server}][${View}]=(${Zone}) ${Zones_Conf}"
+                        dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Zones_Conf_Basename}=ADD"
                         Zones_Conf_Exists=0
                     else
                         aborting "failed to add '${Zone}' to ${Zones_Conf}"
@@ -533,17 +549,18 @@ for Zone_Type in ${Zone_Types[@]}; do
             if [ "${Server}" == "primary" ] && [ "${Zone_Type}" == "master" ]; then
 
                 Template_Zone_File="${Dns_Dir}/etc/template/stencil.${Server}.${View}.${Zone_Type}.zone"
-                Zone_File="${Dns_Dir}/${Zone_Dir}/${Zone}.${View}.zone"
+                Zone_File_Basename="${Zone}.${View}.zone"
+                Zone_File="${Dns_Dir}/${Zone_Dir}/${Zone_File_Basename}"
 
                 if [ ! -r "${Template_Zone_File}" ]; then
-                    verbose "ALERT: ${Template_Zone_File}' file not readable\n"
+                    dnsAlert "ALERT: ${Template_Zone_File}' file not readable\n"
                     if [ "${Dns_Action}" != "check" ]; then
                         continue
                     fi
                 fi
 
                 if [ -f "${Zone_File}" ] && [ ! -w "${Zone_File}" ]; then
-                    verbose "ALERT: ${Zone_File}' file not writable\n"
+                    dnsAlert "ALERT: ${Zone_File}' file not writable\n"
                     if [ "${Dns_Action}" != "check" ]; then
                         continue
                     fi
@@ -556,22 +573,30 @@ for Zone_Type in ${Zone_Types[@]}; do
                 fi
 
                 if [ ${Zone_File_Exists} -eq 0 ]; then
-                    [ "${Dns_Action}" != "delete" ] && dnsEcho "[EXISTS]:[${Server}][${View}]=(${Zone}) ${Zone_File}"
+                    if [ "${Dns_Action}" != "delete" ]; then
+                        #dnsEcho "[EXISTS]:[${Server}][${View}]=(${Zone}) ${Zone_File}"
+                        dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Zone_File_Basename}=EXISTS"
+                    fi
 
                     if [ "${Dns_Action}" == "add" ] || [ "${Dns_Action}" == "delete" ] || [ "${Dns_Action}" == "force" ]; then
                         if dnsBackup "${Zone_File}"; then
-                            dnsEcho "[BACKUP]:[${Server}][${View}]=(${Zone}) ${Zone_File}"
+                            #dnsEcho "[BACKUP]:[${Server}][${View}]=(${Zone}) ${Zone_File}"
+                            dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Zone_File_Basename}=BACKUP"
                         fi
                     fi
                 else
-                    [ "${Dns_Action}" != "add" ] && dnsEcho "[NOT FOUND]:[${Server}][${View}]=(${Zone}) ${Zone_File}"
+                    if [ "${Dns_Action}" != "add" ]; then
+                        #dnsEcho "[NOT FOUND]:[${Server}][${View}]=(${Zone}) ${Zone_File}"
+                        dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Zone_File_Basename}=NOT FOUND"
+                    fi
                 fi
 
                 if [ "${Dns_Action}" == "delete" ] || [ "${Dns_Action}" == "force" ]; then
                     if [ $Zone_File_Exists -eq 0 ]; then
                         rm -f "${Zone_File}"
                         if [ $? -eq 0 ]; then
-                            dnsEcho "[REMOVE]:[${Server}][${View}]=(${Zone}) ${Zone_File}"
+                            #dnsEcho "[REMOVE]:[${Server}][${View}]=(${Zone}) ${Zone_File}"
+                            dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Zone_File_Basename}=REMOVE"
                             Zone_File_Exists=1
                         else
                             aborting "failed to remove '${Zone_File}'"
@@ -581,7 +606,8 @@ for Zone_Type in ${Zone_Types[@]}; do
 
                 if [ "${Dns_Action}" == "add" ] || [ "${Dns_Action}" == "force" ]; then
                     if [ ${Zone_File_Exists} -eq 1 ]; then
-                        dnsEcho "[TEMPLATE]:[${Server}][${View}]=(${Zone}) ${Template_Zone_File}"
+                        #dnsEcho "[TEMPLATE]:[${Server}][${View}]=(${Zone}) ${Template_Zone_File}"
+                        dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:$(basename ${Template_Zone_File})=TEMPLATE"
 
                         Add_Rc=0
                         [ $Add_Rc -eq 0 ] && sed -e "s#++ORIGIN++#${Origin}#g" -e "s#++SERIAL++#${Serial}#g" -e "s#++SOA++#${Soa}#g" -e "s#++VIEW++#${View}#g" -e "s#++ZONE++#${Zone}#g" -e "s#++ZONE_DIR++#${Zone_Dir}#g" "${Template_Zone_File}" >> "${Zone_File}"
@@ -592,7 +618,8 @@ for Zone_Type in ${Zone_Types[@]}; do
                         fi
                         Add_Rc=$?
                         if [ $Add_Rc -eq 0 ]; then
-                            dnsEcho "[CREATE]:[${Server}][${View}]=(${Zone}) ${Zone_File}"
+                            #dnsEcho "[CREATE]:[${Server}][${View}]=(${Zone}) ${Zone_File}"
+                            dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Zone_File_Basename}=CREATE"
                             Zone_File_Exists=0
                         else
                             aborting "failed to create '${Zone_File}"
@@ -633,7 +660,8 @@ for Zone_Type in ${Zone_Types[@]}; do
             Response_Policy_Conf_Exists=1
 
             if [[ "${Zone}" =~ rpz$ ]]; then
-                Response_Policy_Conf="${Dns_Dir}/etc/named.${Server}.${View}.response-policy.conf"
+                Response_Policy_Conf_Basename="named.${Server}.${View}.response-policy.conf"
+                Response_Policy_Conf="${Dns_Dir}/etc/${Response_Policy_Conf_Basename}"
 
                 if [ -f "${Response_Policy_Conf}" ] && [ ! -w "${Response_Policy_Conf}" ]; then
                     aborting "'${Response_Policy_Conf}' file not writable\n"
@@ -648,21 +676,29 @@ for Zone_Type in ${Zone_Types[@]}; do
                 fi
 
                 if [ $Response_Policy_Conf_Exists -eq 0 ]; then
-                    [ "${Dns_Action}" != "delete" ] && dnsEcho "[EXISTS]:[${Server}][${View}]=(${Zone}) ${Response_Policy_Conf}"
+                    if [ "${Dns_Action}" != "delete" ]; then
+                        #dnsEcho "[EXISTS]:[${Server}][${View}]=(${Zone}) ${Response_Policy_Conf}"
+                        dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Response_Policy_Conf_Basename}=EXISTS"
+                    fi
 
                     if [ "${Dns_Action}" == "add" ] || [ "${Dns_Action}" == "delete" ] || [ "${Dns_Action}" == "force" ]; then
                         if dnsBackup "${Response_Policy_Conf}"; then
-                            dnsEcho "[BACKUP]:[${Server}][${View}]=(${Zone}) ${Response_Policy_Conf}"
+                            #dnsEcho "[BACKUP]:[${Server}][${View}]=(${Zone}) ${Response_Policy_Conf}"
+                            dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Response_Policy_Conf_Basename}=BACKUP"
                         fi
                     fi
                 else
-                    [ "${Dns_Action}" != "add" ] && dnsEcho "[NOT FOUND]:[${Server}][${View}]=(${Zone}) ${Response_Policy_Conf}"
+                    if [ "${Dns_Action}" != "add" ]; then
+                        #dnsEcho "[NOT FOUND]:[${Server}][${View}]=(${Zone}) ${Response_Policy_Conf}"
+                        dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Response_Policy_Conf_Basename}=NOT FOUND"
+                    fi
                 fi
 
                 if [ ! -f "${Response_Policy_Conf}" ] && [ $Response_Policy_Conf_Exists -eq 1 ]; then
                     printf "response-policy {\nzone \"${Zone}\";\n};" > "${Response_Policy_Conf}"
                     if [ $? -eq 0 ]; then
-                        dnsEcho "[CREATE]:[${Server}][${View}]=(${Zone}) ${Response_Policy_Conf}"
+                        #dnsEcho "[CREATE]:[${Server}][${View}]=(${Zone}) ${Response_Policy_Conf}"
+                        dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Response_Policy_Conf_Basename}=CREATE"
                     else
                         aborting "failed to create '${Response_Policy_Conf}'"
                     fi
@@ -680,7 +716,8 @@ for Zone_Type in ${Zone_Types[@]}; do
                         [ $Add_Rc -eq 0 ] && sed -i -e '1{/^$/d}' -e '${/^$/d}' "${Response_Policy_Conf}"
                         Add_Rc=$?
                         if [ $Add_Rc -eq 0 ]; then
-                            dnsEcho "[REMOVE]:[${Server}][${View}]=(${Zone}) ${Response_Policy_Conf}"
+                            #dnsEcho "[REMOVE]:[${Server}][${View}]=(${Zone}) ${Response_Policy_Conf}"
+                            dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Response_Policy_Conf_Basename}=REMOVE"
                             Response_Policy_Conf_Exists=1
                         else
                             aborting "failed to remove '${Zone}' from ${Response_Policy_Conf}"
@@ -699,7 +736,8 @@ for Zone_Type in ${Zone_Types[@]}; do
                         [ $Add_Rc -eq 0 ] && sed -i -e '1{/^$/d}' -e '${/^$/d}' "${Response_Policy_Conf}"
                         Add_Rc=$?
                         if [ $Add_Rc -eq 0 ]; then
-                            dnsEcho "[ADD]:[${Server}][${View}]=(${Zone}) ${Response_Policy_Conf}"
+                            #dnsEcho "[ADD]:[${Server}][${View}]=(${Zone}) ${Response_Policy_Conf}"
+                            dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:${Response_Policy_Conf_Basename}=ADD"
                             Response_Policy_Conf_Exists=0 # true
                         else
                             aborting "failed to add '${Zone}' to ${Zones_Conf}"
@@ -728,9 +766,11 @@ for Zone_Type in ${Zone_Types[@]}; do
             if [ "${Server}" == "primary" ] && [ "${Zone_Type}" == "master" ]; then
                 Zone_Status=$(named-checkzone "${Zone}" "${Zone_File}" 2>&1 | tr '\n' ' ')
                 if [ ${#Zone_Status} -eq 0 ] || [ "${Zone_Status}" == "" ] || [ ! -r "${Zone_File}" ]; then
-                    dnsEcho "[STATUS]:[${Server}][${View}]=(${Zone}) NOT LOADED"
+                    #dnsEcho "[STATUS]:[${Server}][${View}]=(${Zone}) NOT LOADED"
+                    dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:STATUS=NOT LOADED"
                 else
-                    dnsEcho "[STATUS]:[${Server}][${View}]=(${Zone}) ${Zone_Status}"
+                    #dnsEcho "[STATUS]:[${Server}][${View}]=(${Zone}) ${Zone_Status}"
+                    dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:STATUS=${Zone_Status}"
                 fi
             fi
 
@@ -751,7 +791,7 @@ svn perms "${Dns_Dir}" &> /dev/null
 if [ ${#Warnings} -gt 0 ]; then
     printf "\n"
     for Warning in "${Warnings[@]}"; do
-        verbose "WARNING: $Warning"
+        dnsAlert "WARNING: $Warning"
     done
     printf "\n"
 
