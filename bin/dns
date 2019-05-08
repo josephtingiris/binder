@@ -10,7 +10,7 @@
 
 PATH=/bin:/usr/bin:/sbin:/usr/sbin
 
-Verbose_Level=8 # <10 for debugging
+Verbose_Level=18 # lower is more verbose
 if [ ${Verbose_Level} -eq 0 ]; then
     Verbose=""
 fi
@@ -64,14 +64,14 @@ Nsupdate_Args="-t 3 -v"
 
 # feature flags
 
-All_Flag=1 # false
-Force_Flag=1 # false
+Dns_All_Flag=1 # false
+Dns_Force_Flag=1 # false
 if [ ${Verbose_Level} -eq 0 ]; then
-    Mail_Flag=0 # true
+    Dns_Mail_Flag=0 # true
 else
-    Mail_Flag=1 # false
+    Dns_Mail_Flag=1 # false
 fi
-Rndc_Flag=1 # false
+Dns_Rndc_Flag=1 # false
 
 #
 # Functions
@@ -103,14 +103,14 @@ function dnsAlert() {
     fi
     alert_message+=" ${alert_arguments[@]}"
 
-    dnsEcho "${TPUT_BOLD}${TPUT_SETAF_1}${alert_message}${TPUT_SGR0}"
+    dnsEcho "${alert_message}"
 
-    if [ ${Mail_Flag} -eq 0 ]; then
+    if [ ${Dns_Mail_Flag} -eq 0 ]; then
         local alert_mail mailx
         mailx=$(type -P mailx)
         if [ ${#mailx} -gt 0 ] && [ ! -d ${mailx} ] && [ -x ${mailx} ] && [ ${#Dns_Alert_Email} -gt 0 ]; then
             alert_mail="${alert_message}\n\n"
-            alert_mail+="exec = $0 ${Arguments}\n\n"
+            alert_mail+="exec = ${0} ${Arguments}\n\n"
             alert_mail+="date = $(date)\n"
             alert_mail+="host = $(hostname)\n"
             alert_mail+="user = $(logname)\n"
@@ -265,6 +265,13 @@ function dnsEcho() {
 
     if [ "${Dns_Date}" == "0" ]; then
         echo_message="[$(date +%F\ %R:%S)] ${echo_message}"
+    fi
+
+    # colorize (red) 'alert' messages
+    if [ ${#TPUT_BOLD} -gt 0 ] && [ ${#TPUT_SETAF_1} -gt 0 ] && [ ${#TPUT_SGR0} -gt 0 ]; then
+        if [[ "${echo_message^^}" == *"ALERT"* ]]; then
+            echo_message="${TPUT_BOLD}${TPUT_SETAF_1}${echo_message}${TPUT_SGR0}"
+        fi
     fi
 
     printf "%b\n" "${echo_message}"
@@ -784,9 +791,9 @@ function dnsZoneArpa() {
 
 # output matching DNS_Zone config key value from dns.conf
 function dnsZoneConfig() {
-    local dns_zone_config_value="$1"
-    local dns_config_file="$2"
-    local dns_config_view="$3"
+    local dns_zone_config_value="${1}"
+    local dns_config_file="${2}"
+    local dns_config_view="${3}"
 
     local verbose_level=15
 
@@ -1253,7 +1260,7 @@ verbose "Verbose = ${Verbose}" ${Verbose_Level}
 
 Failure_Reason=""
 
-Dns_Basename=$(basename $0)
+Dns_Basename=$(basename ${0})
 verbose "Dns_Basename=${Dns_Basename}" ${Verbose_Level}
 
 #
@@ -1292,7 +1299,7 @@ if [ -f "${Dns_Dir}/etc/named.primary.conf" ] && [ -f "${Dns_Dir}/etc/named.seco
         # primary & secondary servers using this script additionally require these ...
         if [ -r /etc/rndc.key ] || [ -r /etc/rndc.conf ]; then
             Dns_Dependencies+=(rndc)
-            Rndc_Flag=0
+            Dns_Rndc_Flag=0
         fi
     fi
 fi
@@ -1384,10 +1391,10 @@ verbose "Dns_Record=${Dns_Record}" ${Verbose_Level}
 # validate name
 #
 
-Dns_Name=$(echo "$1" | sed -e 's#\.\.*#\.#g' -e 's#^\.##g' -e 's#\.$##g' -e '/\.*$/s///g')
+Dns_Name=$(echo "${1}" | sed -e 's#\.\.*#\.#g' -e 's#^\.##g' -e 's#\.$##g' -e '/\.*$/s///g')
 
 if [ ${#Dns_Name} -eq 0 ]; then
-    aborting "invalid dns name '$1'"
+    aborting "invalid dns name '${1}'"
 else
     shift
 fi
@@ -1396,7 +1403,7 @@ fi
 # validate dns data
 #
 
-Dns_Data="$1"
+Dns_Data="${1}"
 shift
 
 verbose "Dns_Data=${Dns_Data}" ${Verbose_Level}
@@ -1451,10 +1458,10 @@ eval set -- ${args}
 while getopts ":afhk:P:p:s:t:v:z:" option; do
     case "${option}" in
         a)
-            All_Flag=0 # true
+            Dns_All_Flag=0 # true
             ;;
         f)
-            Force_Flag=0 # true
+            Dns_Force_Flag=0 # true
             ;;
         h)
             usage
@@ -1493,8 +1500,8 @@ done
 # validate force
 #
 
-verbose "All_Flag = ${All_Flag}" ${Verbose_Level}
-verbose "Force_Flag = ${Force_Flag}" ${Verbose_Level}
+verbose "Dns_All_Flag = ${Dns_All_Flag}" ${Verbose_Level}
+verbose "Dns_Force_Flag = ${Dns_Force_Flag}" ${Verbose_Level}
 
 #
 # validate dns zone arpa
@@ -1618,7 +1625,7 @@ fi
 #
 
 Dns_RRS=()
-if [ ${All_Flag} -eq 1 ]; then
+if [ ${Dns_All_Flag} -eq 1 ]; then
     Dns_RRS=(${Dns_Record})
 else
     if [ "${Dns_Record}" == "A" ] || [ "${Dns_Record}" == "AAAA" ]; then
@@ -1907,7 +1914,7 @@ for Dns_RR in ${Dns_RRS[@]}; do
     verbose "Dns_Zone_Key_RR=${Dns_Zone_Key_RR}" ${Verbose_Level}
     verbose "Dns_Zone_Keyfile_RR=${Dns_Zone_Keyfile_RR}" ${Verbose_Level}
 
-    if [ ${Force_Flag} -eq 0 ] || [ "${Dns_Action}" == "check" ] || [ "${Dns_Action}" == "update" ]; then
+    if [ ${Dns_Force_Flag} -eq 0 ] || [ "${Dns_Action}" == "check" ] || [ "${Dns_Action}" == "update" ]; then
         Dns_Add_RR=1
         Dns_Delete_RR=1
         Dns_Update_RR=0
@@ -1929,7 +1936,7 @@ for Dns_RR in ${Dns_RRS[@]}; do
 
     if dnsLookup match "${Dns_RR}" "${Dns_FQDN_RR}" "${Dns_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}"; then
         Dns_Status+=" ${Dns_Data_RR}"
-        if [ ${Force_Flag} -eq 0 ]; then
+        if [ ${Dns_Force_Flag} -eq 0 ]; then
             verbose "${Dns_Status} [MATCH; FORCE]" ${Verbose_Level}
             Dns_Add_RR=0
             Dns_Delete_RR=0
@@ -1950,7 +1957,7 @@ for Dns_RR in ${Dns_RRS[@]}; do
     else
         if dnsLookup exist "${Dns_RR}" "${Dns_FQDN_RR}" "${Dns_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}"; then
             Dns_Status+=" $(dnsLookup value "${Dns_RR}" "${Dns_FQDN_RR}" "${Dns_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}")"
-            if [ ${Force_Flag} -eq 0 ]; then
+            if [ ${Dns_Force_Flag} -eq 0 ]; then
                 verbose "${Dns_Status} [MISMATCH; FORCE]" ${Verbose_Level}
                 Dns_Add_RR=0
                 Dns_Delete_RR=0
@@ -1973,7 +1980,7 @@ for Dns_RR in ${Dns_RRS[@]}; do
             fi
         else
             Dns_Status+=" ${Dns_Data_RR}"
-            if [ ${Force_Flag} -eq 0 ]; then
+            if [ ${Dns_Force_Flag} -eq 0 ]; then
                 verbose "${Dns_Status} [MISSING; FORCE]" ${Verbose_Level}
                 Dns_Add_RR=0
             else
@@ -2044,7 +2051,7 @@ for Dns_RR in ${Dns_RRS[@]}; do
         fi
     done
 
-    if [ ${Rndc_Flag} -eq 0 ]; then
+    if [ ${Dns_Rndc_Flag} -eq 0 ]; then
         if [ "${Dns_Server_IP_RR}" == "127.0.0.1" ] || [ "${Dns_Server_IP_RR}" == "::1" ]; then
             rndc sync -clean &> /dev/null
             if [ $? -ne 0 ]; then
@@ -2053,7 +2060,7 @@ for Dns_RR in ${Dns_RRS[@]}; do
         fi
     fi
 
-    if [ ${All_Flag} -ne 0 ]; then
+    if [ ${Dns_All_Flag} -ne 0 ]; then
         break
     fi
 done
@@ -2065,7 +2072,7 @@ unset -v Dns_Status_RR
 #
 
 if [ ${Dns_RC} -ne 0 ]; then
-    dnsAlert "$0 ${Arguments} FAILED"
+    dnsAlert "${0} ${Arguments} = FAILED"
 fi
 
 if [ "${BASH_SOURCE}" != "${0}" ]; then
