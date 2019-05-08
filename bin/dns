@@ -103,7 +103,7 @@ function dnsAlert() {
     fi
     alert_message+=" ${alert_arguments[@]}"
 
-    dnsEcho "${alert_message}"
+    (>&2 dnsEcho "${alert_message}")
 
     if [ ${Dns_Mail_Flag} -eq 0 ]; then
         local alert_mail mailx
@@ -1588,6 +1588,17 @@ if [ ${#Dns_Zone} -gt 0 ]; then
 fi
 
 #
+# validate dns zone
+#
+
+#
+# dns zone key is optional; the default zone will be whatever the remote view dicatates
+#
+
+if [ ${#Dns_Zone_Key} -gt 0 ]; then
+    verbose "Dns_Zone_Key=${Dns_Zone_Key}" ${Verbose_Level}
+fi
+
 #
 # final validation
 #
@@ -1866,6 +1877,10 @@ for Dns_RR in ${Dns_RRS[@]}; do
     # validate dns zone
     #
 
+    if [ ${#Dns_Zone_RR} -eq 0 ] && [ ${#Dns_Zone} -gt 0 ]; then
+        Dns_Zone_RR="${Dns_Zone}"
+    fi
+
     verbose "Dns_Zone_RR=${Dns_Zone_RR} [CHECK]" $((${Verbose_Level}))
 
     if [ ${#Dns_Zone_RR} -eq 0 ]; then
@@ -1902,6 +1917,12 @@ for Dns_RR in ${Dns_RRS[@]}; do
     #
     # validate dns zone key
     #
+
+    if [ ${#Dns_Zone_Key_RR} -eq 0 ] && [ ${#Dns_Zone_Key} -gt 0 ]; then
+        Dns_Zone_Key_RR="${Dns_Zone_Key}"
+    fi
+
+    verbose "Dns_Zone_Key_RR=${Dns_Zone_Key_RR} [CHECK]" ${Verbose_Level}
 
     if Dns_Zone_Keyfile_RR=$(dnsZoneKeyfile "${Dns_Reference_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_View_RR}"); then
         Dns_Zone_Key_RR=${Dns_Zone_Keyfile_RR##*,}
