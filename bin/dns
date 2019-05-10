@@ -10,7 +10,7 @@
 
 PATH=/bin:/usr/bin:/sbin:/usr/sbin
 
-Verbose_Level=18 # lower is more verbose
+Verbose_Level=10 # lower is more verbose
 if [ ${Verbose_Level} -eq 0 ]; then
     Verbose=""
 fi
@@ -26,6 +26,8 @@ else
 fi
 Verbose_Level_Prefix=on
 
+Dns_Config_Basename="dns.conf"
+
 Default_Data_Priority=10
 Default_Data_TTL=60
 
@@ -38,11 +40,9 @@ Dns_Actions+=(update)
 
 # any machine using this script requires these ...
 Dns_Dependencies=()
-Dns_Dependencies+=(curl)
 Dns_Dependencies+=(dig)
 Dns_Dependencies+=(egrep)
 Dns_Dependencies+=(find)
-Dns_Dependencies+=(getent)
 Dns_Dependencies+=(host)
 Dns_Dependencies+=(grep)
 Dns_Dependencies+=(nsupdate)
@@ -55,9 +55,12 @@ Dns_Echo_Pad_Right=95
 Dns_Records=()
 Dns_Records+=(A)
 Dns_Records+=(AAAA)
+Dns_Records+=(CNAME)
 #Dns_Records+=(MX)
 #Dns_Records+=(NS)
 Dns_Records+=(PTR)
+
+declare -g Dns_Status_Trace
 
 Host_Args="-W 2"
 Nsupdate_Args="-t 3 -v"
@@ -80,6 +83,8 @@ Dns_Rndc_Flag=1 # false
 
 # standard output an 'aborting' message and exit with a non-zero return code
 function aborting() {
+    Dns_Status_Trace="${FUNCNAME}" && dnsStatus
+
     local abort_message="${@}"
     printf "\naborting, %s\n\n" "${abort_message}"
 
@@ -97,9 +102,13 @@ function dnsAlert() {
 
     local alert_message
 
-    alert_message="!! ALERT !! :"
-    if [ ${#Dns_Status_RR} -gt 0 ]; then
-        alert_message+=" ${Dns_Status_RR}"
+    if [ ${#Dns_Status_Trace} -gt 0 ]; then
+        dnsStatus
+    fi
+
+    alert_message="!! ALERT !!:"
+    if [ ${#Dns_Status} -gt 0 ]; then
+        alert_message+=" ${Dns_Status}"
     fi
     alert_message+=" ${alert_arguments[@]}"
 
@@ -120,8 +129,10 @@ function dnsAlert() {
 }
 
 
-# standard output config key value from dns.conf
+# standard output config key value from config file
 function dnsBackup() {
+    Dns_Status_Trace="${FUNCNAME}" && dnsStatus
+
     local backup_from="${1}"
     local backup_to="${2}"
 
@@ -135,9 +146,9 @@ function dnsBackup() {
     set -o pipefail
 
     if [ ${#backup_to} -eq 0 ]; then
-        backup_to=${Dns_Dir}/backup$(echo "${backup_from}" | sed "s#${Dns_Dir}##g")
+        backup_to=${Dns_Dir}/backup$(echo "${backup_from}" 2> /dev/null | sed "s#${Dns_Dir}##g")
         if [ $? -ne 0 ]; then
-            dnsAlert "backup from '${backup_from}' failed; failed to sed '${Dns_Dir}'"
+            dnsAlert "backup from '${backup_from}' failed; sed didn't replace '${Dns_Dir}'"
             aborting
         fi
     fi
@@ -158,8 +169,8 @@ function dnsBackup() {
 
     backup_to+=".${backup_count}"
 
-    verbose "${FUNCNAME} backup_from=${backup_from}" ${verbose_level}
-    verbose "${FUNCNAME} backup_to=${backup_to}" ${verbose_level}
+    dnsVerbose "backup_from=${backup_from}" ${verbose_level}
+    dnsVerbose "backup_to=${backup_to}" ${verbose_level}
 
     local backup_dir
     if [ ! -d "${backup_from}" ]; then
@@ -179,7 +190,7 @@ function dnsBackup() {
         aborting "'${backup_dir}' directory NOT writable"
     fi
 
-    verbose "${FUNCNAME} backup_dir=${backup_dir}" ${verbose_level}
+    dnsVerbose "backup_dir=${backup_dir}" ${verbose_level}
 
     if [ -d "${backup_from}" ]; then
         cp -rp "${backup_from}/" "${backup_to}"
@@ -197,12 +208,14 @@ function dnsBackup() {
         fi
     fi
 
-    aborting "${FUNCNAME} dead code; bug"
+    aborting "dead code; bug"
 }
 
 
-# standard output config key value from dns.conf
+# standard output config key value from config file
 function dnsConfig() {
+    Dns_Status_Trace="${FUNCNAME}" && dnsStatus
+
     local dns_config_key="${1}"
     local dns_config_file="${2}"
 
@@ -217,11 +230,11 @@ function dnsConfig() {
     fi
 
     if [ ${#dns_config_file} -eq 0 ]; then
-        dnsAlert "${FUNCNAME} dns configuration file missing; value is empty"
+        dnsAlert "configuration file missing; value is empty"
         aborting
     else
         if [ ! -r "${dns_config_file}" ]; then
-            dnsAlert "${FUNCNAME} dns configuration file missing; '${dns_config_file}' file NOT readable"
+            dnsAlert "configuration file missing; '${dns_config_file}' file NOT readable"
             aborting
         fi
     fi
@@ -237,40 +250,113 @@ function dnsConfig() {
 }
 
 
+# return true or false if the name & data is valid for a given record (type)
+function dnsDataValid() {
+    Dns_Status_Trace="${FUNCNAME}" && dnsStatus
+
+    local dns_record="${1^^}"
+    local dns_name="${2,,}"
+    local dns_data="${3}"
+
+    if [ ${#dns_record} -eq 0 ]; then
+        return 1
+    fi
+
+    local dns_data_valid=0 # err to the side of caution?
+
+    # note: dnsZoneArpa validates A, AAAA, & PTR
+
+    # todo: add other record type data validation
+
+    # https://en.wikipedia.org/wiki/List_of_DNS_record_types
+
+    if [ "${dns_record}" == "CNAME" ]; then
+        if (ipcalc -c "${dns_data}" &> /dev/null); then
+            dns_data_valid=1
+        fi
+    fi
+
+    return ${dns_data_valid}
+}
+
+
 # standard output with consistency
 function dnsEcho() {
     local echo_message="${@}"
 
-    if [[ "${echo_message^^}" == *":"* ]]; then
-        v1="${echo_message%%:*}"
-        v1="${v1#"${v1%%[![:space:]]*}"}"
-        v1="${v1%"${v1##*[![:space:]]}"}"
-        v2="${echo_message#*:}"
-        v2="${v2#"${v2%%[![:space:]]*}"}"
-        v2="${v2%"${v2##*[![:space:]]}"}"
-        printf -v echo_message "%-${Dns_Echo_Pad_Left}b : %b" "${v1}" "${v2}"
-        unset v1 v2
-    fi
+    shopt -s extglob
 
-    if [[ "${echo_message^^}" == *"="* ]]; then
-        v1="${echo_message%%=*}"
-        v1="${v1#"${v1%%[![:space:]]*}"}"
-        v1="${v1%"${v1##*[![:space:]]}"}"
-        v2="${echo_message#*=}"
-        v2="${v2#"${v2%%[![:space:]]*}"}"
-        v2="${v2%"${v2##*[![:space:]]}"}"
-        printf -v echo_message "%-${Dns_Echo_Pad_Right}b = %b" "${v1}" "${v2}"
-        unset v1 v2
-    fi
+    echo_message=${echo_message//:/ : }
+    echo_message=${echo_message//+([[:space:]])/ }
+
+    local v1 v2 v3
+
+    v3=1
+    for (( i=0; i<${#echo_message}; i++ )); do
+        if [ "${echo_message:$i:1}" == ":" ]; then
+            let v3=$v3+1
+            let v3=${Dns_Echo_Pad_Left}+$v3
+            v1="$v2"
+            printf -v v2 "%-${v3}b :" "${v1}"
+        else
+            if [ "${echo_message:$i:1}" == "=" ]; then
+                let v3=$v3+1
+                let v3=${Dns_Echo_Pad_Right}
+                v1="$v2"
+                printf -v v2 "%-${v3}b = " "${v1}"
+            else
+                v2+=${echo_message:$i:1}
+            fi
+        fi
+        unset -v v1
+    done
+
+    echo_message="$v2"
+
+    #echo "v2=$v2"
+
+    #exit
+
+    #if [[ "${echo_message^^}" == *":"* ]]; then
+    #v1="${echo_message%%:*}"
+    #v1="${v1#"${v1%%[![:space:]]*}"}"
+    #v1="${v1%"${v1##*[![:space:]]}"}"
+    #v2="${echo_message#*:}"
+    #v2="${v2#"${v2%%[![:space:]]*}"}"
+    #v2="${v2%"${v2##*[![:space:]]}"}"
+    #printf -v echo_message "%-${Dns_Echo_Pad_Left}b : %b" "${v1}" "${v2}"
+    #unset -v v1 v2
+    #fi
+
+    #if [[ "${echo_message^^}" == *"="* ]]; then
+    #v1="${echo_message%%=*}"
+    #v1="${v1#"${v1%%[![:space:]]*}"}"
+    #v1="${v1%"${v1##*[![:space:]]}"}"
+    #v2="${echo_message#*=}"
+    #v2="${v2#"${v2%%[![:space:]]*}"}"
+    #v2="${v2%"${v2##*[![:space:]]}"}"
+    #printf -v echo_message "%-${Dns_Echo_Pad_Right}b = %b" "${v1}" "${v2}"
+    #unset -v v1 v2
+    #fi
 
     if [ "${Dns_Date}" == "0" ]; then
         echo_message="[$(date +%F\ %R:%S)] ${echo_message}"
     fi
 
-    # colorize (red) 'alert' messages
-    if [ ${#TPUT_BOLD} -gt 0 ] && [ ${#TPUT_SETAF_1} -gt 0 ] && [ ${#TPUT_SGR0} -gt 0 ]; then
-        if [[ "${echo_message^^}" == *"ALERT"* ]]; then
-            echo_message="${TPUT_BOLD}${TPUT_SETAF_1}${echo_message}${TPUT_SGR0}"
+    # enhanced messages
+    if [ ${#TPUT_BOLD} -gt 0 ] && [ ${#TPUT_SGR0} -gt 0 ]; then
+        if [ ${#TPUT_SETAF_1} -gt 0 ]; then
+            # red
+            if [[ "${echo_message^^}" == *"ALERT"* ]]; then
+                echo_message="${TPUT_BOLD}${TPUT_SETAF_1}${echo_message}${TPUT_SGR0}"
+            else
+                if [ ${#TPUT_SETAF_3} -gt 0 ]; then
+                    # yellow
+                    if [[ "${echo_message^^}" == *"WARNING"* ]]; then
+                        echo_message="${TPUT_BOLD}${TPUT_SETAF_3}${echo_message}${TPUT_SGR0}"
+                    fi
+                fi
+            fi
         fi
     fi
 
@@ -280,6 +366,8 @@ function dnsEcho() {
 
 # standard output a fully qualified domain name
 function dnsFQDN() {
+    Dns_Status_Trace="${FUNCNAME}" && dnsStatus
+
     local dns_name="${1}"
     local dns_zone_arpa="${2}"
     local dns_zone="${3}"
@@ -289,13 +377,15 @@ function dnsFQDN() {
     local verbose_level=17
 
     if [ ${#dns_name} -eq 0 ]; then
-        dnsAlert "${FUNCNAME} dns_name is empty"
+        dnsAlert "dns_name is empty"
         return 1
     fi
 
-    verbose "${FUNCNAME} dns_name=${dns_name}" ${verbose_level}
-    verbose "${FUNCNAME} dns_zone_arpa=${dns_zone_arpa}" ${verbose_level}
-    verbose "${FUNCNAME} dns_zone=${dns_zone}" ${verbose_level}
+    dnsVerbose "dns_name=${dns_name}" ${verbose_level}
+    dnsVerbose "dns_zone_arpa=${dns_zone_arpa}" ${verbose_level}
+    dnsVerbose "dns_zone=${dns_zone}" ${verbose_level}
+    dnsVerbose "dns_config_file=${dns_config_file}" ${verbose_level}
+    dnsVerbose "dns_view=${dns_view}" ${verbose_level}
 
     local dns_fqdn dns_name_dots dns_zone_default
 
@@ -313,6 +403,7 @@ function dnsFQDN() {
     if [ ${#dns_zone} -gt 0 ]; then
         dns_name=$(echo "${dns_name}" | sed -e "s#${dns_zone}##g")
         dns_name+=".${dns_zone}"
+        dns_name=${dns_name//../.}
         dns_name_dots="${dns_name//[^\.]}"
         dns_name_dots=${#dns_name_dots}
     fi
@@ -327,13 +418,13 @@ function dnsFQDN() {
             dns_fqdn=$(echo "${dns_name}.${dns_zone}"| sed -e 's#\.\.*#\.#g' -e 's#^\.##g' -e 's#\.$##g');
         else
             if [ ${#dns_zone_arpa} -gt 0 ]; then
-                verbose "${FUNCNAME} dns_config_file=${dns_config_file}" ${verbose_level}
-                verbose "${FUNCNAME} dns_view=${dns_view}" ${verbose_level}
+                dnsVerbose "dns_config_file=${dns_config_file}" ${verbose_level}
+                dnsVerbose "dns_view=${dns_view}" ${verbose_level}
 
                 local dns_zone_config
                 dns_zone_config=$(dnsZoneConfig "${dns_zone_arpa}" "${dns_config_file}" "${dns_view}")
 
-                verbose "${FUNCNAME} dns_zone_config=${dns_zone_config}" ${verbose_level}
+                dnsVerbose "dns_zone_config=${dns_zone_config}" ${verbose_level}
 
                 dns_zone=$(echo "${dns_zone_config}" | awk -F, '{print $2}')
 
@@ -342,7 +433,7 @@ function dnsFQDN() {
                     dns_zone=""
                 fi
 
-                verbose "${FUNCNAME} dns_zone=${dns_zone}" ${verbose_level}
+                dnsVerbose "dns_zone=${dns_zone}" ${verbose_level}
             fi
 
             if [ ${#dns_zone} -gt 0 ]; then
@@ -376,6 +467,8 @@ function dnsFQDN() {
 
 # return true if dns record data matches dig record data
 function dnsLookup() {
+    Dns_Status_Trace="${FUNCNAME}" && dnsStatus
+
     local -l dns_lookup_action="${1:0:5}"
     local -u dns_record="${2}"
     local -l dns_fqdn="${3}"
@@ -385,112 +478,155 @@ function dnsLookup() {
     local dns_zone_key="${7}"
     local dns_zone_keyfile="${8}"
 
-    local verbose_level=18
+    local verbose_level
+
+    local dns_record_ip=1 # false
+    local dns_record_soa=1 # false
+
+    if [ "${dns_record}" == "SOA" ]; then
+        dns_record_soa=0 # true
+        verbose_level=16
+    else
+        if [ "${dns_record}" == "IP" ]; then
+            dns_record_ip=0 # true
+            verbose_level=17
+        else
+            verbose_level=22
+        fi
+    fi
 
     if [ ${#dns_lookup_action} -eq 0 ]; then
-        dnsAlert "${FUNCNAME} dns_lookup_action is empty"
+        dnsAlert "dns_lookup_action is empty"
         return 1
     fi
 
-    if [ "${dns_lookup_action}" != "exist" ] && [ "${dns_lookup_action}" != "match" ] && [ "${dns_lookup_action}" != "value" ]; then
-        dnsAlert "${FUNCNAME} dns_lookup_action '${dns_lookup_action}' is invalid"
+    if [ "${dns_lookup_action}" != "exact" ] && [ "${dns_lookup_action}" != "exist" ] && [ "${dns_lookup_action}" != "match" ] && [ "${dns_lookup_action}" != "value" ]; then
+        dnsAlert "dns_lookup_action '${dns_lookup_action}' is invalid"
         return 1
     fi
 
     if [ ${#dns_record} -eq 0 ]; then
-        dnsAlert "${FUNCNAME} dns_record is empty"
+        dnsAlert "dns_record is empty"
         return 1
     fi
 
     if [ ${#dns_fqdn} -eq 0 ]; then
-        dnsAlert "${FUNCNAME} dns_fqdn is empty"
+        dnsAlert "dns_fqdn is empty"
         return 1
     fi
 
     if [ ${#dns_data} -eq 0 ]; then
-        dnsAlert "${FUNCNAME} dns_data is empty"
+        dnsAlert "dns_data is empty"
         return 1
     fi
 
     if [ ${#dns_server} -eq 0 ]; then
-        verbose "${FUNCNAME} dns_server is empty (${dns_fqdn})" ${verbose_level}
+        dnsVerbose "dns_server is empty (${dns_fqdn})" ${verbose_level}
     fi
 
     if [[ ! ${dns_server_port} =~ ^[0-9]+$ ]]; then
         dns_server_port=""
     fi
 
-    verbose "${FUNCNAME} dns_lookup_action=${dns_lookup_action}" ${verbose_level}
-    verbose "${FUNCNAME} dns_record=${dns_record}" ${verbose_level}
-    verbose "${FUNCNAME} dns_fqdn=${dns_fqdn}" ${verbose_level}
-    verbose "${FUNCNAME} dns_server=${dns_server} ${dns_server_port}" ${verbose_level}
+    local dig_args dns_lookup_rc dns_lookup_result dns_lookup_results
 
-    verbose "${FUNCNAME} dns_zone_key=${dns_zone_key}" ${verbose_level}
-    verbose "${FUNCNAME} dns_zone_keyfile=${dns_zone_keyfile}" ${verbose_level}
-
-    local dns_reference dns_result
-    dns_reference="${dns_fqdn}"
-    dns_result="${dns_data}"
-
-    verbose "${FUNCNAME} dns_reference=${dns_reference}" ${verbose_level}
-    verbose "${FUNCNAME} dns_result=${dns_result}" ${verbose_level}
-
-    local dig_args
-
-    dig_args=""
-    if [ ${#dns_server} -gt 0 ]; then
-        dig_args+="@${dns_server}"
+    if [ ${dns_record_ip} -eq 0 ]; then
+        if (ipcalc -c "${dns_fqdn}" &> /dev/null); then
+            dns_lookup_results=(${dns_fqdn})
+        fi
     fi
-    if [ -r "${dns_zone_keyfile}" ]; then
-        dig_args+=" -k ${dns_zone_keyfile}"
-    fi
-    if [ ${#dns_server_port} -gt 0 ] && [ "${dns_server_port}" != "0" ]; then
-        dig_args+=" -p ${dns_server_port}"
-    fi
-    if [ ${#Dns_Record_IP_Family} -gt 0 ]; then
-        dig_args+=" -${Dns_Record_IP_Family}"
-    fi
-    dig_args+=" -q ${dns_reference}"
-    dig_args+=" -t ${dns_record}"
-    dig_args+=" +answer"
-    dig_args+=" +nocl"
-    dig_args+=" +nocmd"
-    dig_args+=" +nocomments"
-    dig_args+=" +nodnssec"
-    dig_args+=" +noidentify"
-    dig_args+=" +nomultiline"
-    dig_args+=" +noquestion"
-    dig_args+=" +norrcomments"
-    dig_args+=" +nosearch"
-    dig_args+=" +nostats"
-    dig_args+=" +nottlid"
-    if [ "${dns_record}" == "SOA" ]; then
-        dig_args+=" +onesoa"
-    fi
-    dig_args+=" +short"
-    #dig_args+=" +tcp"
-    dig_args+=" +retry=1" # retry
-    dig_args+=" +time=3" # timeout
 
-    local dns_lookup_rc dns_lookup_result dns_lookup_results
+    dnsVerbose "dns_lookup_action=${dns_lookup_action}" ${verbose_level}
+    dnsVerbose "dns_record=${dns_record}" ${verbose_level}
+    dnsVerbose "dns_fqdn=${dns_fqdn}" ${verbose_level}
+    dnsVerbose "dns_data=${dns_data}" ${verbose_level}
+    dnsVerbose "dns_server=${dns_server} ${dns_server_port}" ${verbose_level}
 
-    verbose "${FUNCNAME} dig_args=${dig_args}" ${verbose_level} #3 # todo; remove
-    dns_lookup_results=($(dig ${dig_args} 2> /dev/null | sed -e 's#[[:space:]]#++SPACE++#g'))
+    dnsVerbose "dns_zone_key=${dns_zone_key}" ${verbose_level}
+    dnsVerbose "dns_zone_keyfile=${dns_zone_keyfile}" ${verbose_level}
+
+    if [ ${#dns_lookup_results} -eq 0 ]; then
+        dig_args=""
+        if [ ${#dns_server} -gt 0 ]; then
+            dig_args+="@${dns_server}"
+        fi
+
+        dig_args+=" +short"
+
+        #dig_args+=" +tcp"
+
+        dig_args+=" +retry=1" # retry
+        if [ ${dns_record_ip} -eq 0 ]; then
+            dig_args+=" +search"
+        fi
+        dig_args+=" +time=1" # timeout
+
+        if [ ${dns_record_ip} -eq 0 ]; then
+            dig_args+=" +search"
+        else
+            dig_args+=" -t ${dns_record}"
+        fi
+
+        if [ -r "${dns_zone_keyfile}" ]; then
+            dig_args+=" -k ${dns_zone_keyfile}"
+        fi
+
+        dig_args+=" -q ${dns_fqdn}"
+
+        if [ ${#Dns_Record_IP_Family} -gt 0 ]; then
+            if [ "${Dns_Record_IP_Family}" == "4" ] || [ "${Dns_Record_IP_Family}" == "6" ]; then
+                dig_args+=" -${Dns_Record_IP_Family}"
+                if [ ${dns_record_ip} -eq 0 ]; then
+                    if [ "${Dns_Record_IP_Family}" == "4" ]; then
+                        dig_args+=" -t A"
+                    else
+                        if [ "${Dns_Record_IP_Family}" == "6" ]; then
+                            dig_args+=" -t AAAA"
+                        fi
+                    fi
+                fi
+            fi
+        else
+            if [ ${dns_record_ip} -eq 0 ]; then
+                dig_args+=" -t ANY"
+            fi
+        fi
+
+        if [ ${#dns_server_port} -gt 0 ] && [ "${dns_server_port}" != "0" ]; then
+            dig_args+=" -p ${dns_server_port}"
+        fi
+
+        dnsVerbose "dig_args=${dig_args}" ${verbose_level}
+        dns_lookup_results=($(dig ${dig_args} 2> /dev/null | grep -v ^\; | sed -e 's#[[:space:]]#++SPACE++#g'))
+
+        # dig +short CNAME, & possibly other records, return values for SOA queries that are not really a valid SOA; workaround ...
+        if [ ${dns_record_soa} -eq 0 ]; then
+            if [[ ! "${dns_lookup_results}" =~ "++SPACE++" ]]; then
+                dnsVerbose "dns_lookup_results=${dns_lookup_results} [INVALID SOA]" ${verbose_level}
+                dns_lookup_results=""
+            fi
+        fi
+
+    fi
+
+    local exact_rc
 
     if [ ${#dns_lookup_results} -eq 0 ]; then
         dns_lookup_rc=1
+        exact_rc=1
     else
         dns_lookup_rc=0
+        exact_rc=0
     fi
 
-    verbose "${FUNCNAME} ${dns_reference} ${dns_record}=${dns_lookup_results[@]} (${dns_lookup_rc})" ${verbose_level} #4 # todo; remove
+    dnsVerbose "${dns_fqdn} ${dns_record}=${dns_lookup_results[@]} (${dns_lookup_rc})" ${verbose_level}
 
     if [ "${dns_lookup_action}" == "exist" ]; then
-        verbose "${FUNCNAME} dns_lookup_rc=${dns_lookup_rc} ${dns_fqdn} ${dns_record}" ${verbose_level}
+        dnsVerbose "dns_lookup_rc=${dns_lookup_rc} ${dns_fqdn} ${dns_record}" ${verbose_level}
         return ${dns_lookup_rc}
     fi
 
-    if [ "${dns_lookup_action}" == "match" ]; then
+    if [ "${dns_lookup_action}" == "exact" ] || [ "${dns_lookup_action}" == "match" ]; then
         local match_rc=1 # false
         if [ ${#dns_lookup_results} -gt 0 ]; then
             for dns_lookup_result in "${dns_lookup_results[@]}"; do
@@ -498,15 +634,29 @@ function dnsLookup() {
                 if [ "${dns_lookup_result:${#dns_lookup_result}-1:1}" == "." ]; then
                     dns_lookup_result=${dns_lookup_result::-1}
                 fi
-                verbose "${FUNCNAME} dns_lookup_result=${dns_lookup_result} (${dns_result}) [1]" ${verbose_level}
-                if [ "${dns_lookup_result}" == "${dns_result}" ]; then
+                if [ "${dns_lookup_result}" == "${dns_data}" ]; then
+                    dnsVerbose "dns_lookup_result=${dns_lookup_result} (${dns_data}) [${exact_rc}] [match]" ${verbose_level}
+
                     match_rc=0
-                    break
+                    if [ "${dns_lookup_action}" == "match" ]; then
+                        break
+                    fi
+                else
+                    dnsVerbose "dns_lookup_result=${dns_lookup_result} (${dns_data}) [${exact_rc}] [mismatch]" ${verbose_level}
+                    let exact_rc=${exact_rc}+1
                 fi
             done
         fi
-        verbose "${FUNCNAME} match_rc=${match_rc} ${dns_fqdn} ${dns_record}" ${verbose_level}
-        return ${match_rc}
+
+        dnsVerbose "${dns_record} ${dns_fqdn}=${dns_lookup_result}" ${verbose_level}
+
+        if [ "${dns_lookup_action}" == "exact" ]; then
+            dnsVerbose "exact_rc=${exact_rc}" ${verbose_level}
+            return ${exact_rc}
+        else
+            dnsVerbose "match_rc=${match_rc}" ${verbose_level}
+            return ${match_rc}
+        fi
     fi
 
     if [ "${dns_lookup_action}" == "value" ]; then
@@ -527,8 +677,115 @@ function dnsLookup() {
     return 1
 }
 
+
+# set Dns_Status global (used for clean, consistent output)
+function dnsStatus {
+
+    if [ ${#Dns_Status_Trace} -eq 0 ]; then
+        Dns_Status_Trace="${FUNCNAME}"
+    fi
+
+    Dns_Status=""
+
+    if [ ${#Dns_Action_RR} -gt 0 ]; then
+        Dns_Status+=" [${Dns_Action_RR^^}]:"
+    else
+        if [ ${#Dns_Action} -gt 0 ]; then
+            Dns_Status+=" [${Dns_Action^^}]:"
+        fi
+    fi
+
+    if [ ${#Dns_Lookup_FQDN_RR} -gt 0 ]; then
+        Dns_Status+=" ${Dns_Lookup_FQDN_RR}"
+    else
+        if [ ${#Dns_FQDN_RR} -gt 0 ]; then
+            Dns_Status+=" ${Dns_FQDN_RR}"
+        else
+            if [ ${#Dns_FQDN} -gt 0 ]; then
+                Dns_Status+=" ${Dns_FQDN}"
+            else
+                if [ ${#Dns_Lookup_Data_RR} -gt 0 ]; then
+                    Dns_Status+=" ${Dns_Lookup_Data_RR}"
+                else
+                    if [ ${#Dns_Data_RR} -gt 0 ]; then
+                        Dns_Status+=" ${Dns_Data_RR}"
+                    else
+                        if [ ${#Dns_Data} -gt 0 ]; then
+                            Dns_Status+=" ${Dns_Data}"
+                        else
+                            if [ ${#Dns_Zone_Reference_RR} -gt 0 ]; then
+                                Dns_Status+=" ${Dns_Zone_Reference_RR}"
+                            fi
+                        fi
+                    fi
+                fi
+            fi
+        fi
+    fi
+
+    if [ ${#Dns_RR} -gt 0 ]; then
+        Dns_Status+=" ${Dns_RR}"
+    else
+        if [ ${#Dns_Record} -gt 0 ]; then
+            Dns_Status+=" ${Dns_Record}"
+        fi
+    fi
+
+    if [ ${#Dns_Status} -gt 0 ]; then
+        Dns_Status+=", "
+    fi
+
+    if [ ${#Dns_Server_IP_RR} -gt 0 ]; then
+        Dns_Status+="server ${Dns_Server_IP_RR}"
+    else
+        if [ ${#Dns_Server_IP} -gt 0 ]; then
+            Dns_Status+="server ${Dns_Server_IP}"
+        else
+            if [ ${#Dns_Server_RR} -gt 0 ]; then
+                Dns_Status+="server ${Dns_Server_RR}"
+            else
+                if [ ${#Dns_Server} -gt 0 ]; then
+                    Dns_Status+="server ${Dns_Server}"
+                fi
+            fi
+        fi
+    fi
+
+    if [ ${#Dns_View_RR} -gt 0 ]; then
+        Dns_Status+=", view ${Dns_View_RR}"
+    else
+        if [ ${#Dns_View} -gt 0 ]; then
+            Dns_Status+=", view ${Dns_View}"
+        fi
+    fi
+
+    if [ ${#Dns_Zone_Key_RR} -gt 0 ]; then
+        Dns_Status+=", key ${Dns_Zone_Key_RR}"
+    else
+        if [ ${#Dns_Zone_Key} -gt 0 ]; then
+            Dns_Status+=", key ${Dns_Zone_Key}"
+        fi
+    fi
+
+    Dns_Status=${Dns_Status%,*}
+
+    if [ ${#Dns_Status_Trace} -gt 0 ]; then
+        if [ ${#Dns_Status} -gt 0 ]; then
+            Dns_Status+="="
+        fi
+        Dns_Status+="[${Dns_Status_Trace}]"
+    fi
+
+    #if [ ${#Dns_Status} -gt 0 ]; then
+    #Dns_Status+="="
+    #fi
+
+}
+
 # action dns resource record
 function dnsRR() {
+    Dns_Status_Trace="${FUNCNAME}" && dnsStatus
+
     local -l dns_action="${1}"
     local -u dns_record="${2}"
     local -l dns_fqdn="${3}"
@@ -545,74 +802,76 @@ function dnsRR() {
     local verbose_level=18
 
     if [ ${#dns_action} -eq 0 ]; then
-        dnsAlert "${FUNCNAME} dns_action is empty"
+        dnsAlert "dns_action is empty"
         return 1
     fi
-    verbose "${FUNCNAME} dns_action=${dns_action}" ${verbose_level}
+    dnsVerbose "dns_action=${dns_action}" ${verbose_level}
 
     if [ ${#dns_record} -eq 0 ]; then
-        dnsAlert "${FUNCNAME} dns_record is empty"
+        dnsAlert "dns_record is empty"
         return 1
     fi
-    verbose "${FUNCNAME} dns_record=${dns_record}" ${verbose_level}
+    dnsVerbose "dns_record=${dns_record}" ${verbose_level}
 
     if [ ${#dns_fqdn} -eq 0 ]; then
-        dnsAlert "${FUNCNAME} dns_fqdn is empty"
+        dnsAlert "dns_fqdn is empty"
         return 1
     fi
-    verbose "${FUNCNAME} dns_fqdn=${dns_fqdn}" ${verbose_level}
+    dnsVerbose "dns_fqdn=${dns_fqdn}" ${verbose_level}
 
     if [ ${#dns_data} -eq 0 ]; then
-        dnsAlert "${FUNCNAME} dns_data is empty"
+        dnsAlert "dns_data is empty"
         return 1
     fi
-    verbose "${FUNCNAME} dns_data=${dns_data}" ${verbose_level}
+    dnsVerbose "dns_data=${dns_data}" ${verbose_level}
 
     if [[ ! ${dns_data_priority} =~ ^[0-9]+$ ]]; then
-        dnsAlert "${FUNCNAME} dns_data_priority is NOT an integer"
+        dnsAlert "dns_data_priority is NOT an integer"
         return 1
     fi
-    verbose "${FUNCNAME} dns_data_priority=${dns_data_priority}" ${verbose_level}
+    dnsVerbose "dns_data_priority=${dns_data_priority}" ${verbose_level}
 
     if [[ ! ${dns_data_ttl} =~ ^[0-9]+$ ]]; then
-        dnsAlert "${FUNCNAME} dns_data_ttl is NOT an integer"
+        dnsAlert "dns_data_ttl is NOT an integer"
         return 1
     else
         if [ ${dns_data_ttl} -lt 10 ]; then
-            dnsAlert "${FUNCNAME} dns_data_ttl can NOT be less than 10 seconds" ${verbose_level}
+            dnsAlert "dns_data_ttl can NOT be less than 10 seconds" ${verbose_level}
             return 1
         fi
     fi
-    verbose "${FUNCNAME} dns_data_ttl=${dns_data_ttl}" ${verbose_level}
+    dnsVerbose "dns_data_ttl=${dns_data_ttl}" ${verbose_level}
 
     if [ ${#dns_server} -eq 0 ]; then
-        dnsAlert "${FUNCNAME} dns_server is empty"
+        dnsAlert "dns_server is empty"
         return 1
     fi
 
     if [ ${#dns_server_port} -eq 0 ] || [[ ! ${dns_server_port} =~ ^[0-9]+$ ]]; then
-        dnsAlert "${FUNCNAME} dns_server_port is empty"
+        dnsAlert "dns_server_port is empty"
         return 1
     fi
-    verbose "${FUNCNAME} dns_server=${dns_server} (${dns_server_port})" ${verbose_level}
+    dnsVerbose "dns_server=${dns_server} (${dns_server_port})" ${verbose_level}
 
     if [ ${#dns_zone} -eq 0 ]; then
-        dnsAlert "${FUNCNAME} dns_zone is empty"
+        dnsAlert "dns_zone is empty"
         return 1
     fi
-    verbose "${FUNCNAME} dns_zone=${dns_zone}" ${verbose_level}
+    dnsVerbose "dns_zone=${dns_zone}" ${verbose_level}
 
-    if [ ${#dns_zone_arpa} -eq 0 ]; then
-        aborting "${FUNCNAME} dns_zone_arpa is empty"
-        return 1
+    if [ "${dns_record}" == "PTR" ]; then
+        if [ ${#dns_zone_arpa} -eq 0 ]; then
+            dnsAlert "dns_zone_arpa is empty"
+            return 1
+        fi
+        dnsVerbose "dns_zone_arpa=${dns_zone_arpa}" ${verbose_level}
     fi
-    verbose "${FUNCNAME} dns_zone_arpa=${dns_zone_arpa}" ${verbose_level}
 
-    verbose "${FUNCNAME} dns_zone_key=${dns_zone_key}" ${verbose_level}
-    verbose "${FUNCNAME} dns_zone_keyfile=${dns_zone_keyfile}" ${verbose_level}
+    dnsVerbose "dns_zone_key=${dns_zone_key}" ${verbose_level}
+    dnsVerbose "dns_zone_keyfile=${dns_zone_keyfile}" ${verbose_level}
 
     local dns_class="IN"
-    verbose "${FUNCNAME} dns_class=${dns_class}" ${verbose_level}
+    dnsVerbose "dns_class=${dns_class}" ${verbose_level}
 
     # only change actions can proceed ...
 
@@ -642,7 +901,7 @@ function dnsRR() {
     if [ ${#dns_zone_keyfile} -gt 0 ] && [ -r "${dns_zone_keyfile}" ]; then
         nsupdate_key_args="-k ${dns_zone_keyfile}"
     fi
-    verbose "${FUNCNAME} nsupdate_key_args=${nsupdate_key_args}" ${verbose_level}
+    dnsVerbose "nsupdate_key_args=${nsupdate_key_args}" ${verbose_level}
 
     nsupdate_script="server ${dns_server} ${dns_server_port}\n"
     nsupdate_script+="zone ${dns_zone}.\n"
@@ -654,20 +913,37 @@ function dnsRR() {
     fi
 
     local dns_status
-    dns_status="[${Dns_Action^^}]:"
-    if [ ${#Dns_Status_RR} -gt 0 ]; then
-        dns_status+="${Dns_Status_RR}"
+    dns_status=""
+    if [ ${#Dns_Status} -gt 0 ]; then
+        dns_status+="${Dns_Status} "
     else
-        dns_status+="server ${dns_server}, ${dns_fqdn} ${dns_record} ="
+        dns_status+="server ${dns_server}"
+        if [ ${#dns_view} -gt 0 ]; then
+            dns_status+=", view ${dns_view}"
+        fi
+        if [ ${#dns_zone_key} -gt 0 ]; then
+            dns_status+=", key ${dns_zone_key}"
+        fi
+        dns_status+=", ${dns_fqdn}"
+        dns_status+=" ${dns_record} ="
     fi
     dns_status+="${dns_data}"
 
     if [ ${dns_delete} -eq 0 ]; then
-        dns_status+=" [DELETE]"
+        #dns_status+=" [DELETE]"
+
         if [ "${dns_record}" == "PTR" ]; then
-            nsupdate_script+="update delete ${dns_zone_arpa}. ${dns_record}"
+            nsupdate_script+="update delete ${dns_zone_arpa}."
         else
-            nsupdate_script+="update delete ${dns_fqdn}. ${dns_record}"
+            if [ "${dns_record}" == "CNAME" ]; then
+                nsupdate_script+="update delete ${dns_data}."
+            else
+                nsupdate_script+="update delete ${dns_fqdn}."
+            fi
+        fi
+        if [ ${Dns_Force_Flag} -ne 0 ]; then
+            # unless forced, *ONLY* delete this record type
+            nsupdate_script+=" ${dns_record}"
         fi
         nsupdate_script+="\n"
     fi
@@ -677,16 +953,18 @@ function dnsRR() {
     fi
 
     if [ ${dns_add} -eq 0 ]; then
-        dns_status+=" [ADD]"
+        #dns_status+=" [ADD]"
 
         if [ "${dns_record}" == "PTR" ]; then
             #nsupdate_script+="prereq nxdomain ${dns_zone_arpa}.\n"
             nsupdate_script+="update add ${dns_zone_arpa}. ${dns_data_ttl} ${dns_record} ${dns_fqdn}."
         else
-            nsupdate_script+="prereq nxdomain ${dns_fqdn}.\n"
-            nsupdate_script+="update add ${dns_fqdn}. ${dns_data_ttl} ${dns_record} ${dns_data}"
             if [ "${dns_record}" == "CNAME" ]; then
-                nsupdate_script+="."
+                nsupdate_script+="prereq nxdomain ${dns_data}.\n"
+                nsupdate_script+="update add ${dns_data}. ${dns_data_ttl} ${dns_record} ${dns_fqdn}."
+            else
+                nsupdate_script+="prereq nxdomain ${dns_fqdn}.\n"
+                nsupdate_script+="update add ${dns_fqdn}. ${dns_data_ttl} ${dns_record} ${dns_data}"
             fi
         fi
         nsupdate_script+="\n"
@@ -695,17 +973,9 @@ function dnsRR() {
     #nsupdate_script+="debug\n"
     nsupdate_script+="send\n"
 
-    #printf "${nsupdate_script}"
+    #(>&2 printf "${nsupdate_script}")
     printf "${nsupdate_script}" | nsupdate ${Nsupdate_Args} ${nsupdate_key_args} &> /dev/null
     nsupdate_rc=$?
-
-    if [ ${nsupdate_rc} -eq 0 ]; then
-        dns_status+=" [OK]"
-    else
-        dns_status+=" [ERROR] {${nsupdate_rc}}"
-    fi
-
-    dnsEcho "${dns_status}"
 
     if [ "${dns_zone_keyfile}" == "gsstsig" ] || [ "${dns_zone_keyfile}" == "oldgsstsig" ]; then
         # ugh, another windows workaround
@@ -714,13 +984,17 @@ function dnsRR() {
         local dns_lookup_rc=1
 
         if [ "${dns_record}" == "PTR" ]; then
-            dnsLookup match "${dns_record}" "${dns_zone_arpa}" "${dns_fqdn}" "${dns_server}" "${dns_server_port}"
+            dnsLookup match "${dns_record}" "${dns_zone_arpa}" "${dns_fqdn}" "${dns_server}" "${dns_server_port}" "${dns_zone_key}" "${dns_zone_keyfile}"
         else
-            dnsLookup match "${dns_record}" "${dns_fqdn}" "${dns_data}" "${dns_server}" "${dns_server_port}"
+            if [ "${dns_record}" == "CNAME" ]; then
+                dnsLookup match "${dns_record}" "${dns_fqdn}" "${dns_data}" "${dns_server}" "${dns_server_port}" "${dns_zone_key}" "${dns_zone_keyfile}"
+            else
+                dnsLookup match "${dns_record}" "${dns_fqdn}" "${dns_data}" "${dns_server}" "${dns_server_port}" "${dns_zone_key}" "${dns_zone_keyfile}"
+            fi
         fi
-
         dns_lookup_rc=$?
-        verbose "${FUNCNAME} dns_lookup_rc=${dns_lookup_rc}" ${verbose_level}
+
+        dnsVerbose "dns_lookup_rc=${dns_lookup_rc}" ${verbose_level}
         if [ "${dns_action}" == "add" ] && [ ${dns_lookup_rc} -eq 0 ]; then
             nsupdate_rc=0
         fi
@@ -729,14 +1003,44 @@ function dnsRR() {
         fi
     fi
 
-    verbose "${FUNCNAME} nsupdate ${Nsupdate_Args} ${nsupdate_key_args} &> /dev/null [${nsupdate_rc}]" ${verbose_level}
+    if [ ${nsupdate_rc} -eq 0 ]; then
+        dns_status="[OK]:${dns_status}"
+    else
+        dns_status="[ERROR] {${nsupdate_rc}}:${dns_status}"
+    fi
+
+    dnsEcho "${dns_status}"
+
+    dnsVerbose "nsupdate ${Nsupdate_Args} ${nsupdate_key_args} &> /dev/null [${nsupdate_rc}]" ${verbose_level}
 
     return ${nsupdate_rc}
 }
 
 
+# output a warning message
+function dnsWarning() {
+    local warning_arguments=$@
+
+    local warning_message
+
+    if [ ${#Dns_Status_Trace} -gt 0 ]; then
+        dnsStatus
+    fi
+
+    warning_message="! WARNING !:"
+    if [ ${#Dns_Status} -gt 0 ]; then
+        warning_message+=" ${Dns_Status}"
+    fi
+    warning_message+=" ${warning_arguments[@]}"
+
+    (>&2 dnsEcho "${warning_message}")
+}
+
+
 # validate ip address and standard output arpa zone (if appropriate)
 function dnsZoneArpa() {
+    Dns_Status_Trace="${FUNCNAME}" && dnsStatus
+
     local -u dns_record="${1}"
     local dns_data="${2}"
 
@@ -746,8 +1050,8 @@ function dnsZoneArpa() {
         return 0
     fi
 
-    verbose "${FUNCNAME} dns_record=${dns_record}" ${verbose_level}
-    verbose "${FUNCNAME} dns_data=${dns_data}" ${verbose_level}
+    dnsVerbose "dns_record=${dns_record}" ${verbose_level}
+    dnsVerbose "dns_data=${dns_data}" ${verbose_level}
 
     local dns_record_ip_family
 
@@ -783,14 +1087,16 @@ function dnsZoneArpa() {
         fi
     done
 
-    verbose "${FUNCNAME} dns_record_ip_family=${dns_record_ip_family}" ${verbose_level}
+    dnsVerbose "dns_record_ip_family=${dns_record_ip_family}" ${verbose_level}
 
     return ${dns_record_ip_family}
 }
 
 
-# output matching DNS_Zone config key value from dns.conf
+# output matching DNS_Zone config key value from config file
 function dnsZoneConfig() {
+    Dns_Status_Trace="${FUNCNAME}" && dnsStatus
+
     local dns_zone_config_value="${1}"
     local dns_config_file="${2}"
     local dns_config_view="${3}"
@@ -807,19 +1113,19 @@ function dnsZoneConfig() {
 
     if [ ${#dns_config_file} -eq 0 ]; then
         # is it OK *not* to have a config file?  should be ...
-        dnsAlert "${FUNCNAME} dns configuration file missing; value is empty"
+        dnsAlert "configuration file missing; value is empty"
         return 1
     else
         if [ ! -r "${dns_config_file}" ]; then
-            dnsAlert "${FUNCNAME} dns configuration file missing; '${dns_config_file}' file NOT readable"
+            dnsAlert "configuration file missing; '${dns_config_file}' file NOT readable"
             return 1
         fi
     fi
 
-    verbose "${FUNCNAME} dns_zone_config_value=${dns_zone_config_value}" ${verbose_level}
-    verbose "${FUNCNAME} dns_config_file=${dns_config_file}" ${verbose_level}
+    dnsVerbose "dns_zone_config_value=${dns_zone_config_value}" ${verbose_level}
+    dnsVerbose "dns_config_file=${dns_config_file}" ${verbose_level}
     if [ ${#dns_config_view} -gt 0 ]; then
-        verbose "${FUNCNAME} dns_config_view=${dns_config_view}" ${verbose_level}
+        dnsVerbose "dns_config_view=${dns_config_view}" ${verbose_level}
     fi
 
     if [ ${#dns_config_view} -gt 0 ]; then
@@ -837,21 +1143,21 @@ function dnsZoneConfig() {
     while [ ${dns_zone_config_value_dots} -ge 0 ]; do
 
         if [[ "${dns_zone_config_value}" == *"arpa" ]]; then
-            verbose "${FUNCNAME} dns_zone_config_value_dots=${dns_zone_config_value_dots} (${dns_zone_config_value}) [reverse]" ${verbose_level}
+            dnsVerbose "dns_zone_config_value_dots=${dns_zone_config_value_dots} (${dns_zone_config_value}) [reverse]" ${verbose_level}
             # strip spaces!
-            config_data=$(sed -e '/[[:space:]]/s///g' "${dns_config_file}" 2> /dev/null | egrep -e "^Dns_Zone=${dns_zone_config_value},${dns_config_view}" | sort | head -1 | awk -F# '{print $1}')
+            config_data=$(sed -e '/[[:space:]]/s///g' "${dns_config_file}" 2> /dev/null | egrep -e "^Dns_Zone=${dns_zone_config_value},.*,${dns_config_view}" | head -1 | awk -F# '{print $1}')
             config_data_rc=$?
             config_data=${config_data#*=}
         else
-            verbose "${FUNCNAME} dns_zone_config_value_dots=${dns_zone_config_value_dots} (${dns_zone_config_value}) [forward]" ${verbose_level}
-            config_data=$(sed -e '/[[:space:]]/s///g' "${dns_config_file}" 2> /dev/null | egrep -e "^Dns_Zone=.*,${dns_zone_config_value},${dns_config_view}" | sort | tail -1 | awk -F# '{print $1}')
+            dnsVerbose "dns_zone_config_value_dots=${dns_zone_config_value_dots} (${dns_zone_config_value}) [forward]" ${verbose_level}
+            config_data=$(sed -e '/[[:space:]]/s///g' "${dns_config_file}" 2> /dev/null | egrep -e "^Dns_Zone=.*,${dns_zone_config_value},${dns_config_view}" | head -1 | awk -F# '{print $1}')
             config_data_rc=$?
             config_data=${config_data#*=}
         fi
 
 
         if [ ${#config_data} -gt 0 ]; then
-            verbose "${FUNCNAME} config_data=${config_data}" ${verbose_level}
+            dnsVerbose "config_data=${config_data}" ${verbose_level}
             break;
         fi
 
@@ -869,23 +1175,25 @@ function dnsZoneConfig() {
 
 # output valid dns zone keyfile
 function dnsZoneKeyfile() {
+    Dns_Status_Trace="${FUNCNAME}" && dnsStatus
+
     local -l dns_zone="${1}"
     local dns_server="${2}"
     local dns_server_port="${3}"
     local dns_zone_key="${4}"
     local dns_view="${5}"
 
-    local verbose_level=18
+    local verbose_level=17
 
     # only allow public & private views
     if [ "${dns_view}" != "private" ] && [ "${dns_view}" != "public" ]; then
         dns_view=""
     fi
 
-    verbose "${FUNCNAME} dns_zone=${dns_zone}" ${verbose_level}
-    verbose "${FUNCNAME} dns_server=${dns_server} (${dns_server_port})" ${verbose_level}
-    verbose "${FUNCNAME} dns_zone_key=${dns_zone_key}" ${verbose_level}
-    verbose "${FUNCNAME} dns_view=${dns_view}" ${verbose_level}
+    dnsVerbose "dns_zone=${dns_zone}" ${verbose_level}
+    dnsVerbose "dns_server=${dns_server} (${dns_server_port})" ${verbose_level}
+    dnsVerbose "dns_zone_key=${dns_zone_key}" ${verbose_level}
+    dnsVerbose "dns_view=${dns_view}" ${verbose_level}
 
     local dns_zone_keyfile
 
@@ -925,22 +1233,21 @@ function dnsZoneKeyfile() {
 
     dns_dependency_fail=1
     if [ "${dns_zone_keyfile}" == "gsstsig" ] && [ ${#dns_user} -gt 0 ] && [ ${#dns_pass} -gt 0 ]; then
-        verbose "${FUNCNAME} dns_user=${dns_user}, dns_pass=${dns_pass}" ${verbose_level}
+        dnsVerbose "dns_user=${dns_user}, dns_pass=${dns_pass}" ${verbose_level}
 
         dns_dependencies=()
         dns_dependencies+=(kinit)
-        #dns_dependencies+=(klist)
         for dns_dependency in ${dns_dependencies[@]}; do
-            verbose "${FUNCNAME} dns_dependency=${dns_dependency}" $((${verbose_level}+10))
+            dnsVerbose "dns_dependency=${dns_dependency}" $((${verbose_level}+10))
             [ ${#dns_dependency} -eq 0 ] && continue
             dns_dependency_exec=$(type -P "${dns_dependency}")
             if [ ! -f "${dns_dependency_exec}" ] && [ ! -x "${dns_dependency_exec}" ]; then
-                dnsAlert "${FUNCNAME} dns dependency '${dns_dependency_exec}' file NOT found executable"
+                dnsAlert "dns dependency '${dns_dependency_exec}' file NOT found executable"
                 dns_dependency_fail=0
                 break
             fi
         done
-        unset dns_dependency dns_dependency_exec
+        unset -v dns_dependency dns_dependency_exec
 
         if [ ${dns_dependency_fail} -eq 0 ]; then
             return 1
@@ -956,7 +1263,7 @@ function dnsZoneKeyfile() {
         echo "${dns_pass}" | kinit "${dns_user}" &> /dev/null
         kinit_rc=$?
 
-        verbose "${FUNCNAME} kinit_rc=${kinit_rc}" ${verbose_level}
+        dnsVerbose "kinit_rc=${kinit_rc}" ${verbose_level}
 
         if [ ${kinit_rc} -ne 0 ]; then
             dnsAlert "kinit failed for '${dns_user}'"
@@ -968,9 +1275,6 @@ function dnsZoneKeyfile() {
 
     if [ ${#dns_zone_keyfile} -eq 0 ]; then
         dns_zone_keyfiles=()
-        if [ ${#dns_zone_key} -eq 0 ] && [ ${#dns_zone_keyfile} -eq 0 ] && [ ${#dns_view} -eq 0 ]; then
-            dns_zone_keyfiles=(none)
-        fi
         dns_zone_keyfiles+=($(find ${Dns_Dir}/etc -type f -name "named*zone.key" 2> /dev/null | sort -u))
         dns_zone_keyfiles+=($(find /etc -type f -name "named*zone.key" 2> /dev/null | sort -u))
         if [ -r /etc/rndc.key ]; then
@@ -978,6 +1282,9 @@ function dnsZoneKeyfile() {
         fi
         if [ -r /etc/rndc.conf ]; then
             dns_zone_keyfiles+=(/etc/rndc.conf)
+        fi
+        if [ ${#dns_zone_key} -eq 0 ] && [ ${#dns_zone_keyfile} -eq 0 ] && [ ${#dns_view} -eq 0 ]; then
+            dns_zone_keyfiles+=(none)
         fi
     else
         dns_zone_keyfiles=("${dns_zone_keyfile}")
@@ -1022,63 +1329,74 @@ function dnsZoneKeyfile() {
     fi
 
     local local nsupdate_key_args nsupdate_rc nsupdate_script
-    for dns_zone_keyfile in "${dns_zone_keyfiles[@]}"; do
-        [ "${dns_zone_keyfile}" == "" ] && continue
-        verbose "(1) dns_zone_keyfile=${dns_zone_keyfile}" ${verbose_level}
-
-        unset nsupdate_key_args
-
-        if [ "${dns_zone_keyfile}" != "none" ] && [ -r "${dns_zone_keyfile}" ]; then
-            nsupdate_key_args="-k ${dns_zone_keyfile}"
-        else
-            nsupdate_key_args=""
-        fi
-
-        nsupdate_script="server ${dns_server} ${dns_server_port}\n"
-        nsupdate_script+="zone ${dns_zone}.\n"
-        if [ "${dns_zone_keyfile}" == "gsstsig" ]; then
-            nsupdate_script+="gsstsig\n"
-        fi
-        if [ "${dns_zone_keyfile}" == "oldgsstsig" ]; then
-            nsupdate_script+="oldgsstsig\n"
-        fi
-        #nsupdate_script+="debug\n"
-        nsupdate_script+="send\n"
-        nsupdate_script+="answer\n"
-
-        #(>&2 printf "${nsupdate_script}")
-        if [ "${dns_zone_keyfile}" == "gsstsig" ] || [ "${dns_zone_keyfile}" == "oldgsstsig" ]; then
-            # https://bugzilla.redhat.com/show_bug.cgi?id=1394320
-            set +o pipefail
-            printf "${nsupdate_script}" | nsupdate ${Nsupdate_Args} ${nsupdate_key_args} 2> /dev/null | grep -q ".*ANY.*TSIG.*NOERROR[[:space:]]0"
-        else
-            printf "${nsupdate_script}" | nsupdate ${Nsupdate_Args} ${nsupdate_key_args} &> /dev/null
-        fi
-        nsupdate_rc=$?
-
-        verbose "nsupdate ${Nsupdate_Args} ${nsupdate_key_args} &> /dev/null [${nsupdate_rc}]" ${verbose_level}
-
-        if [ ${nsupdate_rc} -eq 0 ]; then
-            # success
-            if [ ${#dns_zone_key} -eq 0 ] && [ "${dns_zone_keyfile}" != "none" ] && [ -r "${dns_zone_keyfile}" ]; then
-                dns_zone_key=$(grep ^key.*\{ "${dns_zone_keyfile}" 2> /dev/null | awk '{print $2}' | sed -e '/"/s///g' -e "/'/s///g")
-            fi
-            if [ "${dns_zone_keyfile}" == "none" ]; then
-                dns_zone_key=""
-                dns_zone_keyfile=""
-            fi
+    if [ ${#dns_server} -eq 0 ]; then
+        if [ -r "${dns_zone_keyfile}" ]; then
             dns_zone_key_valid=0 # true
-            break
         fi
+    else
+        for dns_zone_keyfile in "${dns_zone_keyfiles[@]}"; do
+            [ "${dns_zone_keyfile}" == "" ] && continue
+            dnsVerbose "(1) dns_zone_keyfile=${dns_zone_keyfile}" ${verbose_level}
 
-        if [ -f "${dns_zone_keyfile}" ]; then
-            dnsAlert "dns server '${dns_server}' rejected dns zone key file '${dns_zone_keyfile}'"
-        else
-            dnsAlert "dns server '${dns_server}' rejected dns zone key '${dns_zone_keyfile}'"
-        fi
-    done
+            unset -v nsupdate_key_args
 
-    verbose "dns_zone_key=${dns_zone_key} [${dns_zone_key_valid}], dns_zone_keyfile=${dns_zone_keyfile}, dns_zone_keyfiles=${dns_zone_keyfiles[@]}" ${verbose_level}
+            if [ "${dns_zone_keyfile}" != "none" ] && [ -r "${dns_zone_keyfile}" ]; then
+                nsupdate_key_args="-k ${dns_zone_keyfile}"
+            else
+                nsupdate_key_args=""
+            fi
+
+            nsupdate_script="server ${dns_server} ${dns_server_port}\n"
+            nsupdate_script+="zone ${dns_zone}.\n"
+            if [ "${dns_zone_keyfile}" == "gsstsig" ]; then
+                nsupdate_script+="gsstsig\n"
+            fi
+            if [ "${dns_zone_keyfile}" == "oldgsstsig" ]; then
+                nsupdate_script+="oldgsstsig\n"
+            fi
+            #nsupdate_script+="debug\n"
+            nsupdate_script+="send\n"
+            nsupdate_script+="answer\n"
+
+            #(>&2 printf "${nsupdate_script}")
+            if [ "${dns_zone_keyfile}" == "gsstsig" ] || [ "${dns_zone_keyfile}" == "oldgsstsig" ]; then
+                # https://bugzilla.redhat.com/show_bug.cgi?id=1394320
+                set +o pipefail
+                printf "${nsupdate_script}" | nsupdate ${Nsupdate_Args} ${nsupdate_key_args} 2> /dev/null | grep -q ".*ANY.*TSIG.*NOERROR[[:space:]]0"
+            else
+                printf "${nsupdate_script}" | nsupdate ${Nsupdate_Args} ${nsupdate_key_args} &> /dev/null
+            fi
+            nsupdate_rc=$?
+
+            dnsVerbose "nsupdate ${Nsupdate_Args} ${nsupdate_key_args} &> /dev/null [${nsupdate_rc}]" ${verbose_level}
+
+            if [ ${nsupdate_rc} -eq 0 ]; then
+                # success
+                if [ ${#dns_zone_key} -eq 0 ] && [ "${dns_zone_keyfile}" != "none" ] && [ -r "${dns_zone_keyfile}" ]; then
+                    dns_zone_key=$(grep ^key.*\{ "${dns_zone_keyfile}" 2> /dev/null | awk '{print $2}' | sed -e '/"/s///g' -e "/'/s///g")
+                fi
+                if [ "${dns_zone_keyfile}" == "none" ]; then
+                    dns_zone_key=""
+                    dns_zone_keyfile=""
+                fi
+                dns_zone_key_valid=0 # true
+                break
+            fi
+
+            if [ -f "${dns_zone_keyfile}" ]; then
+                dnsWarning "rejected zone key file '${dns_zone_keyfile}'"
+            else
+                if [ ${#dns_zone_keyfile} -gt 0 ] && [ "${dns_zone_keyfile}" != "none" ]; then
+                    dnsWarning "rejected zone key '${dns_zone_keyfile}'"
+                else
+                    dnsWarning "rejected empty key"
+                fi
+            fi
+
+        done
+    fi
+
+    dnsVerbose "dns_zone_key=${dns_zone_key} [${dns_zone_key_valid}], dns_zone_keyfile=${dns_zone_keyfile}, dns_zone_keyfiles=${dns_zone_keyfiles[@]}" ${verbose_level}
 
     if [ ${#dns_zone_keyfile} -gt 0 ] && [ ${dns_zone_key_valid} -eq 0 ]; then
         printf "${dns_zone_keyfile}"
@@ -1094,8 +1412,8 @@ function dnsZoneKeyfile() {
         dns_zone_keyfile=""
     fi
 
-    verbose "dns_zone_key=${dns_zone_key}" ${verbose_level}
-    verbose "(2) dns_zone_keyfile=${dns_zone_keyfile}" ${verbose_level}
+    dnsVerbose "dns_zone_key=${dns_zone_key} [FINAL]" ${verbose_level}
+    dnsVerbose "dns_zone_keyfile=${dns_zone_keyfile} (${dns_zone_key_valid}) [FINAL]" ${verbose_level}
 
     return ${dns_zone_key_valid}
 }
@@ -1103,15 +1421,18 @@ function dnsZoneKeyfile() {
 
 # output dns zone based on a valid SOA
 function dnsZoneSOA() {
+    Dns_Status_Trace="${FUNCNAME}" && dnsStatus
+
     local soa_value="${1^^}"
     local dns_fqdn="${2}"
-    local dns_data="${3}"
-    local dns_server="${4}"
-    local dns_server_port="${5}"
+    local dns_server="${3}"
+    local dns_server_port="${4}"
+    local dns_zone_key="${5}"
+    local dns_zone_keyfile="${6}"
 
-    local verbose_level=18
+    local verbose_level=14
 
-    verbose "${FUNCNAME} dns_fqdn=${dns_fqdn}" ${verbose_level}
+    dnsVerbose "dns_fqdn=${dns_fqdn}" ${verbose_level}
 
     local dns_lookup_rc=1
 
@@ -1121,9 +1442,8 @@ function dnsZoneSOA() {
     local dns_fqdn_dots=${#dns_fqdn_dots}
 
     while [ ${dns_fqdn_dots} -ge 0 ]; do
-        verbose "${FUNCNAME} dns_fqdn_dots=${dns_fqdn_dots} (${dns_fqdn})" ${verbose_level}
-        dns_soa=$(dnsLookup value "SOA" "${dns_fqdn}" "${dns_fqdn}" "${dns_server}" "${dns_server_port}")
-        #if dnsLookup exists "SOA" "${dns_fqdn}" "${dns_fqdn}" "${dns_server}" "${dns_server_port}"; then
+        dnsVerbose "dns_fqdn_dots=${dns_fqdn_dots} (${dns_fqdn})" ${verbose_level}
+        dns_soa=$(dnsLookup value "SOA" "${dns_fqdn}" "${dns_fqdn}" "${dns_server}" "${dns_server_port}" "${dns_zone_key}" "${dns_zone_keyfile}")
         if [ ${#dns_soa} -gt 0 ]; then
             dns_lookup_rc=0
             break
@@ -1132,8 +1452,8 @@ function dnsZoneSOA() {
         let dns_fqdn_dots=${dns_fqdn_dots}-1
     done
 
-    verbose "${FUNCNAME} dns_soa=${dns_soa} (${dns_fqdn})" ${verbose_level}
-    verbose "${FUNCNAME} dns_fqdn=${dns_fqdn}, dns_lookup_rc=${dns_lookup_rc}" ${verbose_level}
+    dnsVerbose "dns_soa=${dns_soa} (${dns_fqdn})" ${verbose_level}
+    dnsVerbose "dns_fqdn=${dns_fqdn}, dns_lookup_rc=${dns_lookup_rc}" ${verbose_level}
 
     local dns_soa_result
 
@@ -1155,7 +1475,7 @@ function dnsZoneSOA() {
         dns_soa_result=${dns_soa_result%% *}
         dns_soa_result=${dns_soa_result%.*}
         if [[ "${dns_soa_result}" == *"invalid"* ]]; then
-            # todo; review
+            # todo; review impact; somewhat misleading
             dns_soa_result=""
         fi
     fi
@@ -1188,7 +1508,7 @@ function usage() {
             let Dns_Action_Count=${Dns_Action_Count}+1
         done
         printf "\n\n"
-        unset Dns_Action
+        unset -v Dns_Action
     fi
 
     if [ "${Dns_Records}" != "" ]; then
@@ -1203,7 +1523,7 @@ function usage() {
             let Dns_Record_Count=${Dns_Record_Count}+1
         done
         printf "\n\n"
-        unset Dns_Record
+        unset -v Dns_Record
     fi
 
     printf "supported options:\n\n"
@@ -1252,25 +1572,37 @@ if [ "$(type -t verbose)" != "function" ]; then
     }
 fi
 
+function dnsVerbose() {
+    if [ ${Verbose} -gt 1 ]; then
+        verbose ${Dns_Status} $@
+    else
+        verbose $@
+    fi
+}
+
 #
 # Main
 #
 
-verbose "Verbose = ${Verbose}" ${Verbose_Level}
-
 Failure_Reason=""
-
 Dns_Basename=$(basename ${0})
-verbose "Dns_Basename=${Dns_Basename}" ${Verbose_Level}
+
+Dns_Status_Trace="${Dns_Basename}"
+
+Dns_Status_Trace="${Dns_Basename}" && dnsStatus
+
+dnsVerbose "Verbose = ${Verbose}" ${Verbose_Level}
+
+dnsVerbose "Dns_Basename=${Dns_Basename}" ${Verbose_Level}
 
 #
 # validate dns directory
 #
 
-# dns.conf must exist?
+# config file must exist?
 
-if [ -r "/etc/dns.conf" ]; then
-    Dns_Config_File="/etc/dns.conf"
+if [ -r "/etc/${Dns_Config_Basename}" ]; then
+    Dns_Config_File="/etc/${Dns_Config_Basename}"
 fi
 
 if [ "${BASH_SOURCE}" != "${0}" ]; then
@@ -1292,8 +1624,8 @@ if [ ! -d "${Dns_Dir}" ] || [ ! -r "${Dns_Dir}" ]; then
 fi
 
 if [ -f "${Dns_Dir}/etc/named.primary.conf" ] && [ -f "${Dns_Dir}/etc/named.secondary.conf" ]; then
-    if [ ${#Dns_Config_File} -eq 0 ] && [ -r "${Dns_Dir}/etc/dns.conf" ]; then
-        Dns_Config_File="${Dns_Dir}/etc/dns.conf"
+    if [ ${#Dns_Config_File} -eq 0 ] && [ -r "${Dns_Dir}/etc/${Dns_Config_Basename}" ]; then
+        Dns_Config_File="${Dns_Dir}/etc/${Dns_Config_Basename}"
     fi
     if [ -r /etc/named.conf ]; then
         # primary & secondary servers using this script additionally require these ...
@@ -1304,7 +1636,7 @@ if [ -f "${Dns_Dir}/etc/named.primary.conf" ] && [ -f "${Dns_Dir}/etc/named.seco
     fi
 fi
 
-verbose "Dns_Dir=${Dns_Dir}" ${Verbose_Level}
+dnsVerbose "Dns_Dir=${Dns_Dir}" ${Verbose_Level}
 
 PATH=${Dns_Dir}/bin:${Dns_Dir}/sbin:${PATH}
 
@@ -1313,14 +1645,14 @@ PATH=${Dns_Dir}/bin:${Dns_Dir}/sbin:${PATH}
 #
 
 for Dns_Dependency in ${Dns_Dependencies[@]}; do
-    verbose "Dns_Dependency=${Dns_Dependency}" $((${Verbose_Level}+10))
+    dnsVerbose "Dns_Dependency=${Dns_Dependency}" $((${Verbose_Level}+10))
     [ ${#Dns_Dependency} -eq 0 ] && continue
     Dns_Dependency_Exec=$(type -P "${Dns_Dependency}")
     if [ ! -f "${Dns_Dependency_Exec}" ] && [ ! -x "${Dns_Dependency_Exec}" ]; then
         aborting "dependency missing; '${Dns_Dependency}' file NOT executable"
     fi
 done
-unset Dns_Dependency Dns_Dependency_Exec
+unset -v Dns_Dependency Dns_Dependency_Exec
 
 #
 # validate BASH_SOURCE
@@ -1329,7 +1661,7 @@ unset Dns_Dependency Dns_Dependency_Exec
 # for reusable functions; return if this script was sourced
 if [ "${BASH_SOURCE}" != "${0}" ]; then
     if [ ${#Dns_Config_File} -eq 0 ]; then
-        aborting "dns.conf file NOT found"
+        aborting "${Dns_Config_Basename} file NOT found"
     fi
     return
 else
@@ -1367,7 +1699,7 @@ if [ ${Dns_Action_Valid} -eq 1 ]; then
 else
     shift
 fi
-verbose "Dns_Action=${Dns_Action}" ${Verbose_Level}
+dnsVerbose "Dns_Action=${Dns_Action}" ${Verbose_Level}
 
 #
 # validate dns record (type)
@@ -1385,7 +1717,8 @@ if [ ${Dns_Record_Valid} -eq 1 ]; then
 else
     shift
 fi
-verbose "Dns_Record=${Dns_Record}" ${Verbose_Level}
+
+dnsVerbose "Dns_Record=${Dns_Record}" ${Verbose_Level}
 
 #
 # validate name
@@ -1399,14 +1732,16 @@ else
     shift
 fi
 
+dnsVerbose "Dns_Name=${Dns_Name}" ${Verbose_Level}
+
 #
-# validate dns data
+# validate data
 #
 
 Dns_Data="${1}"
 shift
 
-verbose "Dns_Data=${Dns_Data}" ${Verbose_Level}
+dnsVerbose "Dns_Data=${Dns_Data}" ${Verbose_Level}
 
 #
 # parse cli options
@@ -1500,8 +1835,8 @@ done
 # validate force
 #
 
-verbose "Dns_All_Flag = ${Dns_All_Flag}" ${Verbose_Level}
-verbose "Dns_Force_Flag = ${Dns_Force_Flag}" ${Verbose_Level}
+dnsVerbose "Dns_All_Flag = ${Dns_All_Flag}" ${Verbose_Level}
+dnsVerbose "Dns_Force_Flag = ${Dns_Force_Flag}" ${Verbose_Level}
 
 #
 # validate dns zone arpa
@@ -1510,7 +1845,7 @@ verbose "Dns_Force_Flag = ${Dns_Force_Flag}" ${Verbose_Level}
 Dns_Zone_Arpa=$(dnsZoneArpa "${Dns_Record}" "${Dns_Data}")
 Dns_Record_IP_Family=$?
 
-verbose "Dns_Zone_Arpa=${Dns_Zone_Arpa}" ${Verbose_Level}
+dnsVerbose "Dns_Zone_Arpa=${Dns_Zone_Arpa}" ${Verbose_Level}
 
 #
 # validate dns zone
@@ -1520,16 +1855,17 @@ if [ ${#Dns_Zone} -gt 0 ]; then
     Dns_Zone=$(echo "${Dns_Zone}" | sed -e 's#\.\.*#\.#g' -e 's#^\.##g' -e 's#\.$##g');
 fi
 
-
 #
 # validate dns record ip family
 #
 
-if [ ${Dns_Record_IP_Family} -ne 4 ] && [ ${Dns_Record_IP_Family} -ne 6 ]; then
-    aborting "${Dns_Data} is an invalid IP address for an ${Dns_Record} record"
-fi
+dnsVerbose "Dns_Record_IP_Family=${Dns_Record_IP_Family}" ${Verbose_Level}
 
-verbose "Dns_Record_IP_Family=${Dns_Record_IP_Family}" ${Verbose_Level}
+if [ "${Dns_Record}" == "A" ] || [ "${Dns_Record}" == "AAAA" ] || [ "${Dns_Record}" == "PTR" ]; then
+    if [ ${Dns_Record_IP_Family} -ne 4 ] && [ ${Dns_Record_IP_Family} -ne 6 ]; then
+        aborting "${Dns_Data} is an invalid IP address for an ${Dns_Record} record"
+    fi
+fi
 
 #
 # validate dns fully qualified domain name (fqdn)
@@ -1539,14 +1875,22 @@ if [ ${#Dns_Zone_Arpa} -gt 0 ] && [ ${#Dns_FQDN} -eq 0 ]; then
     Dns_FQDN=$(dnsFQDN "${Dns_Name}" "${Dns_Zone_Arpa}" "${Dns_Zone}" "${Dns_Config_File}" "${Dns_View}")
 fi
 
+if [ ${#Dns_Record} -gt 0 ] && [ ${#Dns_FQDN} -eq 0 ]; then
+    Dns_FQDN=$(dnsFQDN "${Dns_Name}" "${Dns_Record}" "${Dns_Zone}" "${Dns_Config_File}" "${Dns_View}")
+fi
+
 if [ ${#Dns_FQDN} -eq 0 ]; then
     aborting "unable to determine fully qualified domain name"
 else
-    verbose "Dns_FQDN=${Dns_FQDN}" ${Verbose_Level}
+    dnsVerbose "Dns_FQDN=${Dns_FQDN}" ${Verbose_Level}
 fi
 
-if [ "${Dns_Name}" != "${Dns_FQDN}" ]; then
-    verbose "Dns_Name=${Dns_Name}" ${Verbose_Level}
+#
+# validate data
+#
+
+if ! (dnsDataValid "${Dns_Record}" "${Dns_FQDN}" "${Dns_Data}"); then
+    aborting "${Dns_Data} is invalid data for a ${Dns_Record} record"
 fi
 
 #
@@ -1557,7 +1901,7 @@ if [[ ! ${Dns_Data_Priority} =~ ^[0-9]+$ ]]; then
     Dns_Data_Priority=${Default_Data_Priority}
 fi
 
-verbose "Dns_Data_Priority=${Dns_Data_Priority}" ${Verbose_Level}
+dnsVerbose "Dns_Data_Priority=${Dns_Data_Priority}" ${Verbose_Level}
 
 #
 # validate data ttl
@@ -1567,7 +1911,7 @@ if [[ ! ${Dns_Data_TTL} =~ ^[0-9]+$ ]]; then
     Dns_Data_TTL=${Default_Data_TTL}
 fi
 
-verbose "Dns_Data_TTL=${Dns_Data_TTL}" ${Verbose_Level}
+dnsVerbose "Dns_Data_TTL=${Dns_Data_TTL}" ${Verbose_Level}
 
 #
 # validate dns view
@@ -1575,7 +1919,7 @@ verbose "Dns_Data_TTL=${Dns_Data_TTL}" ${Verbose_Level}
 
 # dns view is optional; the default view will be whatever the remote named assigns to the dns server ip
 if [ ${#Dns_View} -gt 0 ]; then
-    verbose "Dns_View=${Dns_View}" ${Verbose_Level}
+    dnsVerbose "Dns_View=${Dns_View}" ${Verbose_Level}
 fi
 
 #
@@ -1584,7 +1928,7 @@ fi
 
 # dns zone is optional; the default zone will be whatever the record is parsed to be
 if [ ${#Dns_Zone} -gt 0 ]; then
-    verbose "Dns_Zone=${Dns_Zone}" ${Verbose_Level}
+    dnsVerbose "Dns_Zone=${Dns_Zone}" ${Verbose_Level}
 fi
 
 #
@@ -1596,7 +1940,7 @@ fi
 #
 
 if [ ${#Dns_Zone_Key} -gt 0 ]; then
-    verbose "Dns_Zone_Key=${Dns_Zone_Key}" ${Verbose_Level}
+    dnsVerbose "Dns_Zone_Key=${Dns_Zone_Key}" ${Verbose_Level}
 fi
 
 #
@@ -1658,7 +2002,7 @@ else
     fi
 fi
 
-verbose "Dns_RRS=${Dns_RRS[@]}" ${Verbose_Level}
+dnsVerbose "Dns_RRS=${Dns_RRS[@]}" ${Verbose_Level}
 
 #
 # validate dns admin email
@@ -1668,7 +2012,9 @@ if ! Dns_Alert_Email=$(dnsConfig Dns_Alert_Email); then
     Dns_Alert_Email=root
 fi
 
-verbose "Dns_Alert_Email=${Dns_Alert_Email}" ${Verbose_Level}
+dnsVerbose "Dns_Alert_Email=${Dns_Alert_Email}" ${Verbose_Level}
+
+Dns_Status_Trace="${Dns_Basename}" && dnsStatus
 
 ####################################################################################################################################
 ####################################################################################################################################
@@ -1683,72 +2029,59 @@ Dns_RC=0
 for Dns_RR in ${Dns_RRS[@]}; do
     Dns_RR=${Dns_RR^^}
 
-    verbose "Dns_RR=${Dns_RR}" ${Verbose_Level}
+    dnsVerbose "Dns_RR=${Dns_RR}" ${Verbose_Level}
 
     unset -v Dns_Action_RR Dns_Action_RRS
     unset -v Dns_Data_RR Dns_FQDN_RR
-    unset -v Dns_Reference_RR
     unset -v Dns_Server_RR Dns_Server_IP_RR Dns_Server_Port_RR
     unset -v Dns_Status Dns_Status_RR
     unset -v Dns_View_RR
     unset -v Dns_Zone_Arpa_RR Dns_Zone_RR Dns_Zone_Config_RR Dns_Zone_SOA_RR Dns_Zone_Key_RR Dns_Zone_Keyfile_RR
+    unset -v Dns_Zone_Reference_RR
 
     #
     # validate forward/reverse dns FQDN
     #
 
+    Dns_Data_RR="${Dns_Data}"
+    Dns_FQDN_RR="${Dns_FQDN}"
+
     # it's possible that the forward and reverse authoritative nameservers are different!
     if [ ${#Dns_Zone_Arpa} -gt 0 ] && [ "${Dns_RR}" == "PTR" ]; then
         Dns_Data_RR="${Dns_FQDN}"
         Dns_FQDN_RR="${Dns_Zone_Arpa}"
-    else
-        Dns_Data_RR="${Dns_Data}"
-        Dns_FQDN_RR="${Dns_FQDN}"
     fi
 
-    Dns_Status_RR="server ??, ${Dns_FQDN} ${Dns_RR} ="
+    Dns_Status_Trace="${Dns_Basename}" && dnsStatus
 
     if [ ${#Dns_FQDN_RR} -eq 0 ]; then
-        dnsAlert "can't determine authoritative dns server for '${Dns_FQDN}' ${Dns_RR}' '${Dns_Data_RR}' record"
+        dnsAlert "can't validate authoritative dns server for '${Dns_FQDN}' ${Dns_RR}' '${Dns_Data_RR}' record; no FQDN"
         Dns_RC=1
         continue
     fi
 
-    Dns_Status_RR="server ??, ${Dns_FQDN_RR} ${Dns_RR} ="
+    Dns_Status_Trace="${Dns_Basename}" && dnsStatus
 
-    verbose "Dns_Data_RR=${Dns_Data_RR}" ${Verbose_Level}
-    verbose "Dns_FQDN_RR=${Dns_FQDN_RR}" ${Verbose_Level}
+    dnsVerbose "Dns_FQDN_RR=${Dns_FQDN_RR}" ${Verbose_Level}
+
+    dnsVerbose "Dns_Data_RR=${Dns_Data_RR} [INITIAL]" ${Verbose_Level}
 
     #
     # validate (authoritative) dns server(s)
     #
 
-    if [ ${#Dns_Server} -gt 0 ]; then
-        # honor cli option
-        Dns_Server_RR=${Dns_Server}
-    else
+    if [ ${#Dns_Server} -eq 0 ]; then
         # no dns server given on cli; (attempt to) obtain from dns config
 
         Dns_Zone_Config_RR=$(dnsZoneConfig "${Dns_FQDN_RR}" "${Dns_Config_File}" "${Dns_View}")
 
         if [ ${#Dns_Zone_Config_RR} -gt 0 ]; then
-            verbose "Dns_Zone_Config_RR=${Dns_Zone_Config_RR}" ${Verbose_Level}
+            dnsVerbose "Dns_Zone_Config_RR=${Dns_Zone_Config_RR}" ${Verbose_Level}
 
             Dns_Zone_Arpa_RR=$(echo "${Dns_Zone_Config_RR}" | awk -F, '{print $1}')
             # remove placeholder
             if [ "${Dns_Zone_Arpa_RR}" == "*" ] || [ "${Dns_Zone_Arpa_RR,,}" == "default" ]; then
                 Dns_Zone_Arpa_RR=""
-            fi
-
-            if [ ${#Dns_Zone_Arpa_RR} -eq 0 ]; then
-                if [ "${Dns_RR}" == "PTR" ]; then
-                    Dns_Zone_Arpa_RR=$(dnsZoneConfig "${Dns_Zone_Arpa}" "${Dns_Config_File}" "${Dns_View}" | awk -F, '{print $1}')
-                    if [ ${#Dns_Zone_Arpa_RR} -eq 0 ]; then
-                        Dns_Zone_Arpa_RR="${Dns_Zone_Arpa}"
-                    fi
-                else
-                    Dns_Zone_Arpa_RR="${Dns_Zone_Arpa}"
-                fi
             fi
 
             Dns_Zone_RR=$(echo "${Dns_Zone_Config_RR}" | awk -F, '{print $2}')
@@ -1757,29 +2090,23 @@ for Dns_RR in ${Dns_RRS[@]}; do
                 Dns_Zone_RR=${Dns_Zone_Arpa_RR}
             fi
 
-            # honor cli option
+            # respect cli option
             if [ ${#Dns_View} -eq 0 ]; then
                 Dns_View_RR=$(echo "${Dns_Zone_Config_RR}" | awk -F, '{print $3}')
-            else
-                Dns_View_RR="${Dns_View}"
             fi
 
-            # honor cli option
+            # respect cli option
             if [ ${#Dns_Server} -eq 0 ]; then
                 Dns_Server_RR=$(echo "${Dns_Zone_Config_RR}" | awk -F, '{print $4}')
 
                 if [[ "${Dns_Server_RR}" == *";"* ]]; then
                     Dns_Server_RR=${Dns_Server_RR%%;*}
                 fi
-            else
-                Dns_Server_RR="${Dns_Server}"
             fi
 
-            # honor cli option
+            # respect cli option
             if [ ${#Dns_Zone_Key} -eq 0 ]; then
                 Dns_Zone_Key_RR=$(echo "${Dns_Zone_Config_RR}" | awk -F, '{print $5}')
-            else
-                Dns_Zone_Key_RR="${Dns_Zone_Key}"
             fi
 
         else
@@ -1792,40 +2119,64 @@ for Dns_RR in ${Dns_RRS[@]}; do
         fi
     fi
 
-    if [ ${#Dns_Server_RR} -eq 0 ]; then
-        # note: this ultimately uses the local resolve.conf & may be incorrect; useful, but as a last resort!
-        Dns_Server_RR=$(dnsZoneSOA MNAME "${Dns_FQDN_RR}" "${Dns_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}")
+    #
+    # honor cli options
+    #
+
+    if [ ${#Dns_Server} -gt 0 ]; then
+        Dns_Server_RR="${Dns_Server}"
+        dnsVerbose "(CLI) Dns_Server_RR=${Dns_Server_RR}" ${Verbose_Level}
     fi
 
-    Dns_Server_RR=$(echo "${Dns_Server_RR}" | sed -e '/\.*$/s///g')
+    if [ ${#Dns_View} -gt 0 ]; then
+        Dns_View_RR="${Dns_View}"
+        dnsVerbose "(CLI) Dns_View_RR=${Dns_View_RR}" ${Verbose_Level}
+    fi
 
+    if [ ${#Dns_Zone} -gt 0 ]; then
+        if [ ${#Dns_Zone_RR} -eq 0 ]; then
+            Dns_Zone_RR="${Dns_Zone}"
+        else
+            # ensure zone is stripped from name and appended
+            Dns_Zone_RR=$(echo "${Dns_FQDN_RR}" | sed -e "s#${Dns_Zone}##g")
+            Dns_Zone_RR+=".${Dns_Zone}"
+            Dns_Zone_RR=${Dns_Zone_RR//../.}
+        fi
+        dnsVerbose "(CLI) Dns_Zone_RR=${Dns_Zone_RR}" ${Verbose_Level}
+    fi
+
+    if [ ${#Dns_Zone_Key} -gt 0 ]; then
+        Dns_Zone_Key_RR="${Dns_Zone_Key}"
+        dnsVerbose "(CLI) Dns_Zone_Key_RR=${Dns_Zone_Key_RR}" ${Verbose_Level}
+    fi
+
+    #
+    # validate (initial) dns server ip
+    #
+
+    unset -v Dns_Server_Mname_RR
     if [ ${#Dns_Server_RR} -eq 0 ]; then
-        dnsAlert "can't determine authoritative dns server for '${Dns_FQDN_RR}' ${Dns_RR}' record"
+        # note: this ultimately uses the local resolve.conf & may be incorrect; useful, but something is needed to start!
+        Dns_Server_Mname_RR=$(dnsZoneSOA MNAME "${Dns_FQDN_RR}")
+        dnsVerbose "Dns_Server_Mname_RR=${Dns_Server_Mname_RR}" ${Verbose_Level}
+
+        Dns_Server_IP_RR=$(dnsLookup value IP "${Dns_Server_Mname_RR}" address)
+        if [ ${#Dns_Server_IP_RR} -eq 0 ]; then
+            dnsAlert "can't validate authoritative dns server address for '${Dns_FQDN_RR}' MNAME '${Dns_Server_Mname_RR}'; no A or CNAME record for MNAME?"
+        fi
+    else
+        Dns_Server_IP_RR=$(dnsLookup value IP "${Dns_Server_RR}" address)
+        if [ ${#Dns_Server_IP_RR} -eq 0 ]; then
+            dnsAlert "can't validate authoritative dns server address for '${Dns_FQDN_RR}' server '${Dns_Server_RR}'; dnsLookup failed?"
+        fi
+    fi
+
+    if [ ${#Dns_Server_IP_RR} -eq 0 ]; then
         Dns_RC=1
         continue
     fi
 
-    Dns_Status_RR="server ${Dns_Server_RR}, ${Dns_FQDN_RR} ${Dns_RR} ="
-
-    #
-    # validate dns server ip
-    #
-
-    # debt; use dnsLookup (it supports ports), don't use host
-    Dns_Server_IP_RR=$(host ${Host_Args} -${Dns_Record_IP_Family} ${Dns_Server_RR} ${Dns_Server_RR} 2> /dev/null | grep '^.*has address ' | awk '{print $NF}' | sort -t. -k1rn -k2n -k3n -k4n | head -1)
-
-    if [ ${#Dns_Server_IP_RR} -eq 0 ]; then
-        # note: this ultimately uses the local resolve.conf & may be incorrect; useful, but as a last resort!
-        Dns_Server_IP_RR=$(getent ahosts ${Dns_Server_RR} 2> /dev/null | grep STREAM | sort -t. -k1rn -k2n -k3n -k4n | head -1 | awk '{print $1}')
-    fi
-
-    if [ ${#Dns_Server_IP_RR} -eq 0 ]; then
-        dnsAlert "can't determine authoritative dns server address for '${Dns_FQDN_RR}' MNAME '${Dns_Server_RR}' (no A or CNAME record for MNAME?)"
-        Dns_RC=1
-        continue
-    fi
-
-    Dns_Status_RR="server ${Dns_Server_IP_RR}, ${Dns_FQDN_RR} ${Dns_RR} ="
+    Dns_Status_Trace="${Dns_Basename}" && dnsStatus
 
     #
     # validate dns server port
@@ -1844,96 +2195,247 @@ for Dns_RR in ${Dns_RRS[@]}; do
         continue
     fi
 
-    verbose "Dns_Server_RR=${Dns_Server_RR} (${Dns_Server_IP_RR} port ${Dns_Server_Port_RR})" ${Verbose_Level}
+    dnsVerbose "Dns_Server_RR=${Dns_Server_RR} (${Dns_Server_IP_RR} port ${Dns_Server_Port_RR}) [INITIAL]" ${Verbose_Level}
 
     #
-    # set dns zone soa via recurse logic
+    # validate (initial) dns view
     #
 
-    Dns_Zone_SOA_RR=$(dnsZoneSOA RECURSE "${Dns_FQDN_RR}" "${Dns_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}")
-    verbose "Dns_Zone_SOA_RR=${Dns_Zone_SOA_RR}" $((${Verbose_Level}))
+    if [ ${#Dns_View_RR} -gt 0 ]; then
+        dnsVerbose "Dns_View_RR=${Dns_View_RR} [INITIAL]" ${Verbose_Level}
+    fi
 
     #
-    # validate dns arpa zone
+    # validate (initial) dns zone keys
     #
 
-    verbose "Dns_Zone_Arpa_RR=${Dns_Zone_Arpa_RR}" $((${Verbose_Level}))
+    unset -v Dns_Zone_Keys_RR
 
-    if [ "${Dns_RR}" == "PTR" ]; then
-        if [ "${Dns_Zone_Arpa_RR}" != "${Dns_Zone_SOA_RR}" ]; then
-            if (dnsZoneSOA RNAME "${Dns_FQDN_RR}" "${Dns_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}"); then
-                dnsAlert "dns.conf zone arpa '${Dns_Zone_Arpa_RR}' does NOT match, using SOA '${Dns_Zone_SOA_RR}'"
-                Dns_Zone_Arpa_RR=${Dns_Zone_SOA_RR}
-            else
-                # it's an (rname).invalid zone; don't even attempt to proceed
-                dnsAlert "refusing to change zone '${Dns_Zone_SOA_RR}'; (RNAME invalid)"
-                Dns_RC=1
-                continue
-            fi
+    # attempt key first
+    if [ ${#Dns_Zone_Key_RR} -gt 0 ]; then
+        Dns_Zone_Keys_RR=$(dnsZoneKeyfile "${Dns_FQDN_RR}" "" "" "${Dns_Zone_Key_RR}" "")
+        if [ ${#Dns_Zone_Keys} -gt 0 ]; then
+            dnsVerbose "Dns_Zone_Keys=${Dns_Zone_Keys} [INITIAL] (KEY)" ${Verbose_Level}
         fi
     fi
 
-    #
-    # validate dns zone
-    #
-
-    if [ ${#Dns_Zone_RR} -eq 0 ] && [ ${#Dns_Zone} -gt 0 ]; then
-        Dns_Zone_RR="${Dns_Zone}"
+    # attempt view second
+    if [ ${#Dns_Zone_Keys_RR} -eq 0 ] && [ ${#Dns_View_RR} -gt 0 ]; then
+        Dns_Zone_Keys_RR=$(dnsZoneKeyfile "${Dns_FQDN_RR}" "" "" "" "${Dns_View_RR}")
+        if [ ${#Dns_Zone_Keys} -gt 0 ]; then
+            dnsVerbose "Dns_Zone_Keys=${Dns_Zone_Keys} [INITIAL] (VIEW)" ${Verbose_Level}
+        fi
     fi
 
-    verbose "Dns_Zone_RR=${Dns_Zone_RR} [CHECK]" $((${Verbose_Level}))
+    if [ ${#Dns_Zone_Keys_RR} -gt 0 ]; then
+        Dns_Zone_Key_RR=${Dns_Zone_Keys_RR##*,}
+        Dns_Zone_Keyfile_RR=${Dns_Zone_Keys_RR%%,*}
+    fi
+
+    if [ ${#Dns_Zone_Key_RR} -gt 0 ]; then
+        dnsVerbose "Dns_Zone_Key_RR=${Dns_Zone_Key_RR} [INITIAL]" ${Verbose_Level}
+    fi
+
+    if [ ${#Dns_Zone_Keyfile_RR} -gt 0 ]; then
+        dnsVerbose "Dns_Zone_Keyfile_RR=${Dns_Zone_Keyfile_RR} [INITIAL]" ${Verbose_Level}
+    fi
+
+    #
+    # validate (final) dns server
+    #
+
+    if [ ${#Dns_Server_RR} -eq 0 ] && [ ${#Dns_Server_Mname_RR} -gt 0 ]; then
+        Dns_Server_RR=$(dnsZoneSOA MNAME "${Dns_FQDN_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}")
+    fi
+
+    Dns_Server_RR=$(echo "${Dns_Server_RR}" | sed -e '/\.*$/s///g')
+
+    if [ ${#Dns_Server_RR} -eq 0 ]; then
+        if [ ${#Dns_View_RR} -eq 0 ]; then
+            if [ ${#Dns_Zone_Key_RR} -eq 0 ]; then
+                dnsAlert "can't validate authoritative dns server for '${Dns_FQDN_RR}' ${Dns_RR} record; no key?"
+            else
+                dnsAlert "can't validate authoritative dns server for '${Dns_FQDN_RR}' ${Dns_RR} record; using key '${Dns_Zone_Key_RR}'?"
+            fi
+        else
+            if [ ${#Dns_Zone_Key_RR} -eq 0 ]; then
+                dnsAlert "can't validate authoritative dns server for '${Dns_FQDN_RR}' ${Dns_RR} record; no key for view '${Dns_View_RR}'?"
+            else
+                dnsAlert "can't validate authoritative dns server for '${Dns_FQDN_RR}' ${Dns_RR} record; using key '${Dns_Zone_Key_RR}' for view '${Dns_View_RR}'?"
+            fi
+        fi
+        Dns_RC=1
+        continue
+    fi
+
+    Dns_Status_Trace="${Dns_Basename}" && dnsStatus
+
+    Dns_Server_IP_RR=$(dnsLookup value IP "${Dns_Server_RR}" address)
+    if [ ${#Dns_Server_IP_RR} -eq 0 ]; then
+        dnsAlert "absolutely can't determine authoritative dns server address for '${Dns_FQDN_RR}' server '${Dns_Server_RR}'; nothing works"
+        Dns_RC=1
+        continue
+    fi
+
+    Dns_Status_Trace="${Dns_Basename}" && dnsStatus
+
+    dnsVerbose "Dns_Server_RR=${Dns_Server_RR} (${Dns_Server_IP_RR} port ${Dns_Server_Port_RR}) [FINAL]" ${Verbose_Level}
+
+    #
+    # set (initial) dns zone soa via recurse logic
+    #
+
+    Dns_Zone_SOA_RR=$(dnsZoneSOA RECURSE "${Dns_FQDN_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}")
+
+    dnsVerbose "Dns_Zone_SOA_RR=${Dns_Zone_SOA_RR} [INITIAL]" $((${Verbose_Level}))
+
+    #
+    # validate (initial) dns arpa zone
+    #
+
+    if [ ${#Dns_Zone_Arpa_RR} -eq 0 ]; then
+        if [ "${Dns_RR}" == "PTR" ]; then
+            Dns_Zone_Arpa_RR=$(dnsZoneConfig "${Dns_Zone_Arpa}" "${Dns_Config_File}" "${Dns_View}" | awk -F, '{print $1}')
+            if [ ${#Dns_Zone_Arpa_RR} -eq 0 ]; then
+                Dns_Zone_Arpa_RR="${Dns_Zone_Arpa}"
+            fi
+        else
+            Dns_Zone_Arpa_RR="${Dns_Zone_Arpa}"
+        fi
+    fi
+
+    dnsVerbose "Dns_Zone_Arpa_RR=${Dns_Zone_Arpa_RR} [INITIAL]" $((${Verbose_Level}))
+
+    #
+    # validate (final) dns arpa zone
+    #
+
+    if [ "${Dns_RR}" == "PTR" ] && [ ${#Dns_Zone_SOA_RR} -gt 0 ]; then
+        if [ "${Dns_Zone_Arpa_RR}" != "${Dns_Zone_SOA_RR}" ]; then
+            dnsWarning "${Dns_Config_Basename} zone arpa '${Dns_Zone_Arpa_RR}' does NOT match, using SOA '${Dns_Zone_SOA_RR}'"
+            Dns_Zone_Arpa_RR=${Dns_Zone_SOA_RR}
+        fi
+
+        if ! (dnsZoneSOA RNAME "${Dns_Zone_Arpa_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}" &> /dev/null); then
+            # it's an (rname).invalid zone; don't even attempt to proceed
+            dnsAlert "refusing to change zone '${Dns_Zone_Arpa_RR}'; RNAME invalid?"
+            Dns_RC=1
+            continue
+        fi
+    fi
+
+    dnsVerbose "Dns_Zone_Arpa_RR=${Dns_Zone_Arpa_RR} [FINAL]" $((${Verbose_Level}))
+
+    #
+    # validate (initial) dns zone
+    #
+
+    dnsVerbose "Dns_Zone_RR=${Dns_Zone_RR} [INITIAL]" $((${Verbose_Level}))
 
     if [ ${#Dns_Zone_RR} -eq 0 ]; then
         Dns_Zone_RR=${Dns_Zone_SOA_RR}
     fi
 
+    #
+    # validate (final) dns zone soa via recurse logic
+    #
+
+    if [ ${#Dns_Zone_SOA_RR} -eq 0 ]; then
+        Dns_Zone_SOA_RR=$(dnsZoneSOA RECURSE "${Dns_FQDN_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}")
+
+        if [ ${#Dns_Zone_SOA_RR} -eq 0 ]; then
+            dnsAlert "no SOA for '${Dns_FQDN_RR}'"
+            Dns_RC=1
+            continue
+        fi
+    fi
+
+    dnsVerbose "Dns_Zone_SOA_RR=${Dns_Zone_SOA_RR} [FINAL]" $((${Verbose_Level}))
+
+    #
+    # validate (final) dns zone
+    #
+
     if [ "${Dns_RR}" != "PTR" ]; then
         if [ "${Dns_Zone_RR}" != "${Dns_Zone_SOA_RR}" ]; then
-            dnsAlert "dns.conf zone '${Dns_Zone_RR}' does NOT match, using SOA '${Dns_Zone_SOA_RR}'"
+            dnsWarning "${Dns_Config_Basename} zone '${Dns_Zone_RR}' does NOT match, using SOA '${Dns_Zone_SOA_RR}'"
+
             Dns_Zone_RR=${Dns_Zone_SOA_RR}
         fi
     fi
 
     if [ ${#Dns_Zone_RR} -eq 0 ]; then
-        dnsAlert "can't determine dns zone for '${Dns_FQDN_RR}'"
+        dnsAlert "can't determine zone for '${Dns_FQDN_RR}'"
         Dns_RC=1
         continue
     fi
 
-    verbose "Dns_Zone_RR=${Dns_Zone_RR} [VALID]" $((${Verbose_Level}))
+    dnsVerbose "Dns_Zone_RR=${Dns_Zone_RR} [FINAL]" $((${Verbose_Level}))
 
     #
     # set dns reference (zone)
     #
 
     if [ "${Dns_RR}" == "PTR" ]; then
-        Dns_Reference_RR="${Dns_Zone_SOA_RR}"
+        Dns_Zone_Reference_RR="${Dns_Zone_Arpa_RR}"
     else
-        Dns_Reference_RR="${Dns_Zone_RR}"
+        Dns_Zone_Reference_RR="${Dns_Zone_RR}"
     fi
 
-    verbose "Dns_Reference_RR=${Dns_Reference_RR}" $((${Verbose_Level}))
+    dnsVerbose "Dns_Zone_Reference_RR=${Dns_Zone_Reference_RR}" $((${Verbose_Level}))
 
     #
-    # validate dns zone key
+    # validate (final) dns zone keys
     #
 
-    if [ ${#Dns_Zone_Key_RR} -eq 0 ] && [ ${#Dns_Zone_Key} -gt 0 ]; then
-        Dns_Zone_Key_RR="${Dns_Zone_Key}"
+    unset -v Dns_Zone_Keys_RR
+
+    Dns_Zone_Keys_RR=$(dnsZoneKeyfile "${Dns_Zone_Reference_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_View_RR}")
+
+    if [ ${#Dns_Zone_Keys_RR} -gt 0 ]; then
+        Dns_Zone_Key_RR=${Dns_Zone_Keys_RR##*,}
+        Dns_Zone_Keyfile_RR=${Dns_Zone_Keys_RR%%,*}
     fi
 
-    verbose "Dns_Zone_Key_RR=${Dns_Zone_Key_RR} [CHECK]" ${Verbose_Level}
-
-    if Dns_Zone_Keyfile_RR=$(dnsZoneKeyfile "${Dns_Reference_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_View_RR}"); then
-        Dns_Zone_Key_RR=${Dns_Zone_Keyfile_RR##*,}
-        Dns_Zone_Keyfile_RR=${Dns_Zone_Keyfile_RR%%,*}
+    if [ ${#Dns_Zone_Key_RR} -gt 0 ]; then
+        dnsVerbose "Dns_Zone_Key_RR=${Dns_Zone_Key_RR} [FINAL]" ${Verbose_Level}
     else
-        dnsAlert "can't determine dns zone key for '${Dns_FQDN_RR}'"
+        dnsAlert "can't validate zone key for '${Dns_Zone_Reference_RR}'"
+        Dns_RC=1
         continue
     fi
 
-    verbose "Dns_Zone_Key_RR=${Dns_Zone_Key_RR}" ${Verbose_Level}
-    verbose "Dns_Zone_Keyfile_RR=${Dns_Zone_Keyfile_RR}" ${Verbose_Level}
+    if [ ${#Dns_Zone_Keyfile_RR} -gt 0 ]; then
+        dnsVerbose "Dns_Zone_Keyfile_RR=${Dns_Zone_Keyfile_RR} [FINAL]" ${Verbose_Level}
+    else
+        dnsAlert "can't validate zone keyfile for '${Dns_Zone_Reference_RR}'"
+        Dns_RC=1
+        continue
+    fi
+
+    #
+    # validate dns data
+    #
+
+    if [ ${#Dns_Data_RR} -gt 0 ] && [ "${Dns_RR}" == "CNAME" ]; then
+        # ensure zone is stripped from name and appended
+        Dns_Data_RR=$(echo "${Dns_Data_RR}" | sed -e "s#${Dns_Zone_RR}##g")
+        Dns_Data_RR+=".${Dns_Zone_RR}"
+        Dns_Data_RR=${Dns_Data_RR//../.}
+
+    fi
+
+    dnsVerbose "Dns_Data_RR=${Dns_Data_RR} [FINAL]" ${Verbose_Level}
+
+    if [ "${Dns_FQDN_RR}" == "${Dns_Data_RR}" ]; then
+        dnsAlert "invalid dns data '${Dns_Data_RR}' equals FQDN '${Dns_FQDN_RR}'; refused"
+        Dns_RC=1
+        continue
+    fi
+
+    #
+    # validate action
+    #
 
     if [ ${Dns_Force_Flag} -eq 0 ] || [ "${Dns_Action}" == "check" ] || [ "${Dns_Action}" == "update" ]; then
         Dns_Add_RR=1
@@ -1953,68 +2455,143 @@ for Dns_RR in ${Dns_RRS[@]}; do
         Dns_Update_RR=1
     fi
 
-    Dns_Status=${Dns_Status_RR}
+    Dns_Status_Trace="${Dns_Basename}" && dnsStatus
 
-    if dnsLookup match "${Dns_RR}" "${Dns_FQDN_RR}" "${Dns_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}"; then
-        Dns_Status+=" ${Dns_Data_RR}"
+    Dns_Status_RR=${Dns_Status}
+
+    #
+    # validate lookup record data
+    #
+
+    unset -v Dns_Lookup_FQDN_RR Dns_Lookup_Data_RR Dns_lookup_Value_RR
+
+    Dns_Lookup_FQDN_RR=${Dns_FQDN_RR}
+    Dns_Lookup_Data_RR=${Dns_Data_RR}
+
+    if [ "${Dns_RR}" == "CNAME" ]; then
+
+        # for CNAME; flip the lookup around
+        Dns_Lookup_FQDN_RR=${Dns_Data_RR}
+        Dns_Lookup_Data_RR=${Dns_FQDN_RR}
+
+        if [ ${Dns_Force_Flag} -ne 0 ]; then # todo; test
+            # for CNAME; validate address record exists
+            if ! (dnsLookup exist "IP" "${Dns_Lookup_Data_RR}" "${Dns_Lookup_FQDN_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}"); then
+                dnsAlert "IP address record missing for '${Dns_FQDN_RR}'; CNAME '${Dns_Data_RR}'"
+                Dns_RC=1
+                continue
+            fi
+        fi
+
+        # for CNAME; validate if any record is *not* a CNAME (e.g. an A exists in its place)
+    fi
+
+    Dns_Lookup_Value_RR=$(dnsLookup value "ANY" "${Dns_Lookup_FQDN_RR}" "${Dns_Lookup_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}")
+
+    Dns_Status_Trace="${Dns_Basename}" && dnsStatus
+
+    dnsVerbose "Dns_Lookup_FQDN_RR=${Dns_Lookup_FQDN_RR}" ${Verbose_Level}
+    dnsVerbose "Dns_Lookup_Data_RR=${Dns_Lookup_Data_RR}" ${Verbose_Level}
+    dnsVerbose "Dns_Lookup_Value_RR=${Dns_Lookup_Value_RR}" ${Verbose_Level}
+
+    if [ "${Dns_RR}" == "A" ] || [ "${Dns_RR}" == "AAAA" ]; then
+        # for A/AAA; validate if any record is *NOT* an address record (e.g. a CNAME exists in its place)
+        if [ ${Dns_Force_Flag} -ne 0 ] && [ ${#Dns_Lookup_Value_RR} -gt 0 ]; then
+            if ! (ipcalc -c "${Dns_Lookup_Value_RR}" &> /dev/null); then
+                dnsAlert "non-IP address data found for '${Dns_FQDN_RR}'; DATA '${Dns_Lookup_Value_RR}'"
+                Dns_RC=1
+                continue
+            fi
+        fi
+    fi
+
+    Dns_Status_RR+=" current ${Dns_Lookup_FQDN_RR} ${Dns_RR} = ${Dns_Lookup_Value_RR}"
+
+    unset -v Dns_OK
+    Dns_OK=0 # true
+
+    if dnsLookup exact "${Dns_RR}" "${Dns_Lookup_FQDN_RR}" "${Dns_Lookup_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}"; then
         if [ ${Dns_Force_Flag} -eq 0 ]; then
-            verbose "${Dns_Status} [MATCH; FORCE]" ${Verbose_Level}
+            dnsVerbose "${Dns_Status_RR} [EXACT; FORCE]" ${Verbose_Level}
             Dns_Add_RR=0
             Dns_Delete_RR=0
         else
             if [ ${Dns_Add_RR} -eq 0 ]; then
-                verbose "${Dns_Status} [MATCH; ADD]" ${Verbose_Level}
+                dnsVerbose "${Dns_Status_RR} [EXACT; ADD]" ${Verbose_Level}
                 Dns_Add_RR=1
             else
                 if [ ${Dns_Delete_RR} -eq 0 ]; then
-                    verbose "${Dns_Status} [MATCH; DELETE]" ${Verbose_Level}
+                    dnsVerbose "${Dns_Status_RR} [EXACT; DELETE]" ${Verbose_Level}
                 else
                     if [ ${Dns_Update_RR} -eq 0 ]; then
-                        verbose "${Dns_Status} [MATCH; UPDATE]" ${Verbose_Level}
+                        dnsVerbose "${Dns_Status_RR} [EXACT; UPDATE]" ${Verbose_Level}
                     fi
                 fi
             fi
         fi
     else
-        if dnsLookup exist "${Dns_RR}" "${Dns_FQDN_RR}" "${Dns_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}"; then
-            Dns_Status+=" $(dnsLookup value "${Dns_RR}" "${Dns_FQDN_RR}" "${Dns_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}")"
+        if dnsLookup match "${Dns_RR}" "${Dns_Lookup_FQDN_RR}" "${Dns_Lookup_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}"; then
             if [ ${Dns_Force_Flag} -eq 0 ]; then
-                verbose "${Dns_Status} [MISMATCH; FORCE]" ${Verbose_Level}
+                dnsVerbose "${Dns_Status_RR} [MATCH; FORCE]" ${Verbose_Level}
                 Dns_Add_RR=0
                 Dns_Delete_RR=0
             else
                 if [ ${Dns_Add_RR} -eq 0 ]; then
-                    verbose "${Dns_Status} [MISMATCH; ADD]" ${Verbose_Level}
+                    dnsVerbose "${Dns_Status_RR} [MATCH; ADD]" ${Verbose_Level}
                     Dns_Add_RR=1
+                    Dns_OK=1
                 else
                     if [ ${Dns_Delete_RR} -eq 0 ]; then
-                        verbose "${Dns_Status} [MISMATCH; DELETE]" ${Verbose_Level}
-                        Dns_Delete_RR=1
+                        dnsVerbose "${Dns_Status_RR} [MATCH; DELETE]" ${Verbose_Level}
                     else
                         if [ ${Dns_Update_RR} -eq 0 ]; then
-                            verbose "${Dns_Status} [MISMATCH; UPDATE]" ${Verbose_Level}
-                            Dns_Add_RR=0
-                            Dns_Delete_RR=0
+                            dnsVerbose "${Dns_Status_RR} [MATCH; UPDATE]" ${Verbose_Level}
                         fi
                     fi
                 fi
             fi
         else
-            Dns_Status+=" ${Dns_Data_RR}"
-            if [ ${Dns_Force_Flag} -eq 0 ]; then
-                verbose "${Dns_Status} [MISSING; FORCE]" ${Verbose_Level}
-                Dns_Add_RR=0
-            else
-                if [ ${Dns_Add_RR} -eq 0 ]; then
-                    verbose "${Dns_Status} [MISSING; ADD]" ${Verbose_Level}
+            if dnsLookup exist "ANY" "${Dns_Lookup_FQDN_RR}" "${Dns_Lookup_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}"; then
+                if [ ${Dns_Force_Flag} -eq 0 ]; then
+                    dnsVerbose "${Dns_Status_RR} [MISMATCH; FORCE]" ${Verbose_Level}
+                    Dns_Add_RR=0
+                    Dns_Delete_RR=0
                 else
-                    if [ ${Dns_Delete_RR} -eq 0 ]; then
-                        verbose "${Dns_Status} [MISSING; DELETE]" ${Verbose_Level}
-                        Dns_Delete_RR=1
+                    if [ ${Dns_Add_RR} -eq 0 ]; then
+                        dnsVerbose "${Dns_Status_RR} [MISMATCH; ADD]" ${Verbose_Level}
+                        Dns_Add_RR=1
+                        Dns_OK=1
                     else
-                        if [ ${Dns_Update_RR} -eq 0 ]; then
-                            verbose "${Dns_Status} [MISSING; UPDATE]" ${Verbose_Level}
-                            Dns_Add_RR=0
+                        if [ ${Dns_Delete_RR} -eq 0 ]; then
+                            dnsVerbose "${Dns_Status_RR} [MISMATCH; DELETE]" ${Verbose_Level}
+                            Dns_Delete_RR=1
+                            Dns_OK=1
+                        else
+                            if [ ${Dns_Update_RR} -eq 0 ]; then
+                                dnsVerbose "${Dns_Status_RR} [MISMATCH; UPDATE]" ${Verbose_Level}
+                                Dns_Add_RR=0
+                                Dns_Delete_RR=0
+                            fi
+                        fi
+                    fi
+                fi
+            else
+                if [ ${Dns_Force_Flag} -eq 0 ]; then
+                    dnsVerbose "${Dns_Status_RR} [MISSING; FORCE]" ${Verbose_Level}
+                    Dns_Add_RR=0
+                else
+                    if [ ${Dns_Add_RR} -eq 0 ]; then
+                        dnsVerbose "${Dns_Status_RR} [MISSING; ADD]" ${Verbose_Level}
+                    else
+                        if [ ${Dns_Delete_RR} -eq 0 ]; then
+                            dnsVerbose "${Dns_Status_RR} [MISSING; DELETE]" ${Verbose_Level}
+                            Dns_Delete_RR=1
+                            Dns_OK=1
+                        else
+                            if [ ${Dns_Update_RR} -eq 0 ]; then
+                                dnsVerbose "${Dns_Status_RR} [MISSING; UPDATE]" ${Verbose_Level}
+                                Dns_Add_RR=0
+                            fi
                         fi
                     fi
                 fi
@@ -2022,36 +2599,41 @@ for Dns_RR in ${Dns_RRS[@]}; do
         fi
     fi
 
-    verbose "Dns_Update_RR=${Dns_Update_RR}" ${Verbose_Level}
-    verbose "Dns_Delete_RR=${Dns_Delete_RR}" ${Verbose_Level}
-    verbose "Dns_Add_RR=${Dns_Add_RR}" ${Verbose_Level}
+    Dns_Status_Trace="${Dns_Basename}" && dnsStatus
+
+    dnsVerbose "Dns_Update_RR=${Dns_Update_RR}" ${Verbose_Level}
+    dnsVerbose "Dns_Delete_RR=${Dns_Delete_RR}" ${Verbose_Level}
+    dnsVerbose "Dns_Add_RR=${Dns_Add_RR}" ${Verbose_Level}
 
     Dns_Action_RRS=()
 
-    if [ ${Dns_Delete_RR} -eq 0 ]; then
-        Dns_Action_RRS+=(delete)
-        Dns_Status+=" [DELETE]"
-    fi
-
-    if [ ${Dns_Add_RR} -eq 0 ]; then
-        Dns_Action_RRS+=(add)
-        Dns_Status+=" [ADD]"
-    fi
-
     if [ ${Dns_Delete_RR} -eq 1 ] && [ ${Dns_Add_RR} -eq 1 ]; then
         if [ "${Dns_Action}" == "delete" ]; then
-            Dns_Status+=" [NO ${Dns_Record} RECORD]"
+            Dns_Status_RR+=" [DELETE ${Dns_FQDN_RR} NOT REQUIRED]"
         else
-            Dns_Status+=" [OK]"
+            if [ ${Dns_OK} -eq 0 ]; then
+                Dns_Status_RR="[OK]:${Dns_Status_RR}"
+            else
+                Dns_Status_RR="[ERROR]:${Dns_Status_RR}"
+            fi
         fi
-        if [ "${Dns_Action}" != "check" ]; then
-            dnsEcho "[CHECK]: ${Dns_Status}"
+    else
+        if [ ${Dns_Delete_RR} -eq 0 ]; then
+            Dns_Action_RRS+=(delete)
+            Dns_Status_RR+=" [DELETE ${Dns_FQDN_RR} REQUIRED]"
         fi
+
+        if [ ${Dns_Add_RR} -eq 0 ]; then
+            Dns_Action_RRS+=(add)
+            Dns_Status_RR+=" [ADD ${Dns_FQDN_RR} REQUIRED]"
+        fi
+
+        Dns_Status_RR="[NOTICE]:${Dns_Status_RR}"
     fi
 
+    dnsEcho "${Dns_Status_RR}"
 
     if [ "${Dns_Action}" == "check" ]; then
-        dnsEcho "[CHECK]: ${Dns_Status}"
         continue
     fi
 
@@ -2063,10 +2645,14 @@ for Dns_RR in ${Dns_RRS[@]}; do
     # validation complete
     #
 
+    ## todo: remove
+    #continue
+
     for Dns_Action_RR in "${Dns_Action_RRS[@]}"; do
-        #if dnsRR "${Dns_Action_RR}" "${Dns_RR}" "${Dns_FQDN}" "${Dns_Data}" "${Dns_Data_Priority}" "${Dns_Data_TTL}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_RR}" "${Dns_Zone_Arpa}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}"; then
-        if dnsRR "${Dns_Action_RR}" "${Dns_RR}" "${Dns_FQDN}" "${Dns_Data}" "${Dns_Data_Priority}" "${Dns_Data_TTL}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Reference_RR}" "${Dns_Zone_Arpa}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}"; then
-            verbose "[SUCCESS] ${0} ${Arguments}" ${Verbose_Level}
+        Dns_Status_Trace="${Dns_Basename}" && dnsStatus
+
+        if dnsRR "${Dns_Action_RR}" "${Dns_RR}" "${Dns_FQDN}" "${Dns_Data_RR}" "${Dns_Data_Priority}" "${Dns_Data_TTL}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Reference_RR}" "${Dns_Zone_Arpa}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}"; then
+            dnsVerbose "[SUCCESS] ${0} ${Arguments}" ${Verbose_Level}
         else
             dnsAlert "[FAILED] ${0} ${Arguments}"
         fi
@@ -2076,7 +2662,7 @@ for Dns_RR in ${Dns_RRS[@]}; do
         if [ "${Dns_Server_IP_RR}" == "127.0.0.1" ] || [ "${Dns_Server_IP_RR}" == "::1" ]; then
             rndc sync -clean &> /dev/null
             if [ $? -ne 0 ]; then
-                dnsAlert "rndc sync -clean FAILED"
+                dnsAlert "rndc sync -clean [FAILED]"
             fi
         fi
     fi
@@ -2084,16 +2670,17 @@ for Dns_RR in ${Dns_RRS[@]}; do
     if [ ${Dns_All_Flag} -ne 0 ]; then
         break
     fi
+
 done
 
-unset -v Dns_Status_RR
+unset -v Dns_Status Dns_Status_RR Dns_Status_Trace
 
 #
 # End dns
 #
 
 if [ ${Dns_RC} -ne 0 ]; then
-    dnsAlert "${0} ${Arguments} = FAILED"
+    dnsAlert "'${0} ${Arguments}' [FAILED]"
 fi
 
 if [ "${BASH_SOURCE}" != "${0}" ]; then
