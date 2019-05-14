@@ -1,5 +1,5 @@
 $ORIGIN ++ORIGIN++.
-$TTL 60 ; 1 minute
+$TTL 3600 ; 1 hour
 @ IN SOA ++SOA++. root.++ZONE++. (
         ++SERIAL++ ; serial
         900        ; refresh (15 minutes)
