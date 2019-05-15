@@ -1,7 +1,7 @@
 $ORIGIN ++ORIGIN++.
 $TTL 3600 ; 1 hour
 @ IN SOA ++SOA++. root.++ZONE++. (
-        ++SERIAL++ ; serial
+        ++SERIAL++ ; serial (DO NOT USE date based values! increment +1 only)
         900        ; refresh (15 minutes)
         600        ; retry (10 minutes)
         604800     ; expire (1 week)
