@@ -300,7 +300,7 @@ fi
 #
 
 Printf_Pad=65
-Serial="$(date +%Y%m%d)01"
+Serial=1 # DO NOT use date based serials; nsupdate doesn't honor date (it only increments) & date based values are too close to the 32-bit integer limit
 
 #
 # create zone dirs
