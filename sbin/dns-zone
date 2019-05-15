@@ -23,6 +23,7 @@ Dns_Actions+=(add)
 Dns_Actions+=(check)
 Dns_Actions+=(delete)
 Dns_Actions+=(force)
+Dns_Actions+=(sort)
 Dns_Action_Valid=1
 
 Dns_Views=()
@@ -299,12 +300,16 @@ fi
 # set dynamic variable values
 #
 
-Printf_Pad=65
 Serial=1 # DO NOT use date based serials; nsupdate doesn't honor date (it only increments) & date based values are too close to the 32-bit integer limit
 
 #
 # create zone dirs
 #
+
+if [ "${Dns_Action}" == "sort" ] && [ "${Zone}" != "dns.conf" ]; then
+    usage "sort is only valid for dns.conf"
+    exit
+fi
 
 if [ "${Dns_Action}" == "add" ] || [ "${Dns_Action}" == "force" ]; then
     if [ ! -d "${Dns_Dir}/${Zone_Dir}" ]; then
@@ -326,6 +331,25 @@ fi
 #
 
 if [ "${Zone}" == "dns.conf" ]; then
+
+    if [ "${Dns_Action}" == "sort" ]; then
+        Dns_Conf_Tmp=/tmp/dns.conf.tmp
+        cp "${Dns_Conf}" "${Dns_Conf_Tmp}.bak"
+        printf "//\n// $(basename "${Dns_Conf}")\n//\n\n" > "${Dns_Conf_Tmp}"
+        egrep "^[a-z]|^[A-Z]" "${Dns_Conf}" | grep -v "^Dns_Zone=" | sort >> "${Dns_Conf_Tmp}"
+        egrep "^[a-z]|^[A-Z]" "${Dns_Conf}" | grep "^Dns_Zone=" | grep -v "^Dns_Zone=\*" | sort -t, -k1,1 -k2,2 >> "${Dns_Conf_Tmp}"
+        egrep "^[a-z]|^[A-Z]" "${Dns_Conf}" | grep "^Dns_Zone=\*" | sort -t, -k1,1 -k2,2 >> "${Dns_Conf_Tmp}"
+        cp "${Dns_Conf_Tmp}" "${Dns_Conf}"
+        if [ $? -ne 0 ]; then
+            cp "${Dns_Conf_Tmp}.bak" "${Dns_Conf}"
+        fi
+        rm -f "${Dns_Conf_Tmp}"
+        rm -f "${Dns_Conf_Tmp}.bak"
+        sed -i "s#,#, #g" "${Dns_Conf}"
+        sed -i "s# \+# #g" "${Dns_Conf}"
+        cat "${Dns_Conf}"
+        exit
+    fi
 
     # this allows an extra (undocumented) argument (for dns.conf searches)
     if [ ${#1} -eq 0 ]; then

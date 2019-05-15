@@ -409,7 +409,7 @@ function dnsFQDN() {
 
                 dnsVerbose "dns_zone_config=${dns_zone_config}" ${verbose_level}
 
-                dns_zone=$(echo "${dns_zone_config}" | awk -F, '{print $2}')
+                dns_zone=$(echo "${dns_zone_config}" | awk -F, '{print $1}')
 
                 # remove placeholder
                 if [ "${dns_zone}" == "*" ] || [ "${dns_zone,,}" == "default" ]; then
@@ -823,7 +823,7 @@ function dnsStatus {
 }
 
 # action dns resource record
-function dnsRR() {
+function dnsUpdate() {
     Dns_Status_Trace="${FUNCNAME}" && dnsStatus
 
     local -l dns_action="${1}"
@@ -1097,7 +1097,11 @@ function dnsRR() {
 
     #nsupdate_script+="answer\n"
 
-    (>&2 printf "${nsupdate_script}")
+    if [[ ${Verbose} =~ ^[0-9]+$ ]]; then
+        if [ ${Verbose} -gt ${verbose_level} ]; then
+            (>&2 printf "${nsupdate_script}")
+        fi
+    fi
 
     printf "${nsupdate_script}" | nsupdate ${Nsupdate_Args} ${nsupdate_key_args} &> /dev/null
     nsupdate_rc=$?
@@ -1263,21 +1267,23 @@ function dnsZoneConfig() {
 
     config_data_rc=1
 
+    local config_direction
     while [ ${dns_zone_config_value_dots} -ge 0 ]; do
 
         if [[ "${dns_zone_config_value}" == *"arpa" ]]; then
-            dnsVerbose "dns_zone_config_value_dots=${dns_zone_config_value_dots} (${dns_zone_config_value}) [reverse]" ${verbose_level}
-            # strip spaces!
-            config_data=$(sed -e '/[[:space:]]/s///g' "${dns_config_file}" 2> /dev/null | egrep -e "^Dns_Zone=${dns_zone_config_value},.*,${dns_config_view}" | head -1 | awk -F# '{print $1}')
+            config_direction="reverse"
+            config_data=$(sed -e '/[[:space:]]/s///g' "${dns_config_file}" 2> /dev/null | egrep -e "^Dns_Zone=.*,${dns_zone_config_value},${dns_config_view}" | head -1 | awk -F# '{print $1}')
             config_data_rc=$?
             config_data=${config_data#*=}
         else
-            dnsVerbose "dns_zone_config_value_dots=${dns_zone_config_value_dots} (${dns_zone_config_value}) [forward]" ${verbose_level}
-            config_data=$(sed -e '/[[:space:]]/s///g' "${dns_config_file}" 2> /dev/null | egrep -e "^Dns_Zone=.*,${dns_zone_config_value},${dns_config_view}" | head -1 | awk -F# '{print $1}')
+            config_direction="forward"
+            config_data=$(sed -e '/[[:space:]]/s///g' "${dns_config_file}" 2> /dev/null | egrep -e "^Dns_Zone=${dns_zone_config_value},.*,${dns_config_view}" | head -1 | awk -F# '{print $1}')
             config_data_rc=$?
             config_data=${config_data#*=}
         fi
 
+        dnsVerbose "dns_zone_config_value_dots=${dns_zone_config_value_dots} (${dns_zone_config_value}) [${config_direction}]" ${verbose_level}
+        dnsVerbose "config_data=${config_data} (${dns_zone_config_value}) [${config_direction}]" ${verbose_level}
 
         if [ ${#config_data} -gt 0 ]; then
             dnsVerbose "config_data=${config_data}" ${verbose_level}
@@ -2256,13 +2262,13 @@ for Dns_RR in ${Dns_RRS[@]}; do
         if [ ${#Dns_Zone_Config_RR} -gt 0 ]; then
             dnsVerbose "Dns_Zone_Config_RR=${Dns_Zone_Config_RR}" ${Verbose_Level}
 
-            Dns_Zone_Arpa_RR=$(echo "${Dns_Zone_Config_RR}" | awk -F, '{print $1}')
+            Dns_Zone_Arpa_RR=$(echo "${Dns_Zone_Config_RR}" | awk -F, '{print $2}')
             # remove placeholder
             if [ "${Dns_Zone_Arpa_RR}" == "*" ] || [ "${Dns_Zone_Arpa_RR,,}" == "default" ]; then
                 Dns_Zone_Arpa_RR=""
             fi
 
-            Dns_Zone_RR=$(echo "${Dns_Zone_Config_RR}" | awk -F, '{print $2}')
+            Dns_Zone_RR=$(echo "${Dns_Zone_Config_RR}" | awk -F, '{print $1}')
             # remove placeholder
             if [ "${Dns_Zone_RR}" == "*" ] || [ "${Dns_Zone_RR,,}" == "default" ]; then
                 Dns_Zone_RR=${Dns_Zone_Arpa_RR}
@@ -2473,7 +2479,7 @@ for Dns_RR in ${Dns_RRS[@]}; do
 
     if [ ${#Dns_Zone_Arpa_RR} -eq 0 ]; then
         if [ "${Dns_RR}" == "PTR" ]; then
-            Dns_Zone_Arpa_RR=$(dnsZoneConfig "${Dns_Zone_Arpa}" "${Dns_Config_File}" "${Dns_View}" | awk -F, '{print $1}')
+            Dns_Zone_Arpa_RR=$(dnsZoneConfig "${Dns_Zone_Arpa}" "${Dns_Config_File}" "${Dns_View}" | awk -F, '{print $2}')
             if [ ${#Dns_Zone_Arpa_RR} -eq 0 ]; then
                 Dns_Zone_Arpa_RR="${Dns_Zone_Arpa}"
             fi
@@ -2660,7 +2666,7 @@ for Dns_RR in ${Dns_RRS[@]}; do
     fi
 
     if [ "${Dns_RR}" == "A" ] || [ "${Dns_RR}" == "AAAA" ]; then
-        # forcing will work, here. dnsRR will remove matching CNAMEs (when forced)
+        # forcing will work, here. dnsUpdate will remove matching CNAMEs (when forced)
         if [ ${#Dns_Lookup_Value_RR} -eq 0 ]; then
             if [ ${Dns_Force_Flag} -ne 0 ]; then
                 Dns_Lookup_Value_RR=$(dnsLookup value "CNAME" "${Dns_Lookup_FQDN_RR}" "${Dns_Lookup_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}")
@@ -2952,7 +2958,7 @@ if [ "${Dns_RR}" == "NS" ]; then
     for Dns_Action_RR in "${Dns_Action_RRS[@]}"; do
         Dns_Status_Trace="${Dns_Basename}" && dnsStatus
 
-        if dnsRR "${Dns_Action_RR}" "${Dns_RR}" "${Dns_Lookup_FQDN_RR}" "${Dns_Lookup_Data_RR}" "${Dns_Data_Priority}" "${Dns_Data_TTL}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Reference_RR}" "${Dns_Zone_Arpa}" "${Dns_Zone_SOA_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}"; then
+        if dnsUpdate "${Dns_Action_RR}" "${Dns_RR}" "${Dns_Lookup_FQDN_RR}" "${Dns_Lookup_Data_RR}" "${Dns_Data_Priority}" "${Dns_Data_TTL}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Reference_RR}" "${Dns_Zone_Arpa}" "${Dns_Zone_SOA_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}"; then
             Dns_Status_Trace="${Dns_Basename}" && dnsStatus
             Dns_Lookup_Value_RR=$(dnsLookup value "${Dns_RR}" "${Dns_Lookup_FQDN_RR}" "${Dns_Lookup_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}")
             if [ ${#Dns_Lookup_Value_RR} -eq 0 ]; then
