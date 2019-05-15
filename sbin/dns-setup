@@ -117,8 +117,6 @@ if [ ${#GIT_URL} -gt 0 ]; then
     if [ $? -eq 0 ]; then
         git status
         echo
-    else
-        echo
     fi
     if [ $Install -eq 0 ] || [ $Reinstall -eq 0 ]; then
         git pull
