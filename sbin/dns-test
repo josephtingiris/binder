@@ -1,0 +1,30 @@
+#!/bin/bash
+
+Test_Domain="${1}"
+if [ ${#Test_Domain} -eq 0 ]; then
+    echo 'usage: ${0} <test domain>'
+    exit 1
+fi
+
+Test_IP=10.11.12.13
+Test_Record="dns-test-record"
+
+unset Verbose
+
+# in this order, these should all succeed ...
+Dns_Args=()
+Dns_Args+=("add a ${Test_Record}.${Test_Domain} ${Test_IP}")
+Dns_Args+=("add a ${Test_Record}.${Test_Domain} ${Test_IP} -a")
+Dns_Args+=("delete a ${Test_Record}.${Test_Domain} ${Test_IP}")
+Dns_Args+=("update a ${Test_Record}.${Test_Domain} ${Test_IP} -a")
+Dns_Args+=("delete a ${Test_Record}.${Test_Domain} ${Test_IP} -a")
+Dns_Args+=("add a ${Test_Record}.${Test_Domain} ${Test_IP} -a")
+Dns_Args+=("add cname ${Test_Record}.${Test_Domain} ${Test_Record}-cname")
+Dns_Args+=("delete cname ${Test_Record}.${Test_Domain} ${Test_Record}-cname")
+Dns_Args+=("update cname ${Test_Record}.${Test_Domain} ${Test_Record}-cname")
+
+for Dns_Arg in "${Dns_Args[@]}"; do
+    echo "[$(date)] dns ${Dns_Arg}"
+    dns ${Dns_Arg} &> /dev/null
+    [ $? -ne 0 ] && echo "ERROR ERROR ERROR 'dns ${Dns_Arg}' ERROR ERROR ERROR" && sleep 10
+done
