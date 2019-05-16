@@ -312,11 +312,11 @@ if [ $Secondary -eq 0 ]; then
 fi
 
 if [ -f ${Dns_Dir}/etc/named.shared.rndc.key ]; then
-    if [ -f /etc/rndc.key ]; then
+    if [ -f /etc/rndc.key ] || [ -h /etc/rndc.key ]; then
         if [ $Install -eq 0 ] || [ $Reinstall -eq 0 ]; then
             dnsBackup "/etc/rndc.key"
             dnsEcho "[BACKUP]: /etc/rndc.key"
-            rm -f "/etc/rndc.key"
+            rm -f /etc/rndc.key
         else
             dnsEcho "[FOUND]: /etc/rndc.key"
         fi
@@ -342,6 +342,15 @@ if [ $Install -eq 0 ] || [ $Reinstall -eq 0 ]; then
         fi
     fi
     find "${Dns_Dir}/cache" -type f | egrep -e 'cache$|tmp' | xargs -r rm
+fi
+
+if [ -f "${Dns_Dir}/etc/profile.d/dns.sh" ]; then
+    if [ $Install -eq 0 ] || [ $Reinstall -eq 0 ]; then
+        cp -f "${Dns_Dir}/etc/profile.d/dns.sh" /etc/profile.d/dns.sh
+        if [ $? -eq 0 ]; then
+            dnsEcho "[COPIED]: ${DNS_DIR}/etc/profile.d/dns.sh"
+        fi
+    fi
 fi
 
 if [ $Install -eq 0 ] || [ $Reinstall -eq 0 ]; then
