@@ -185,14 +185,13 @@ if [ ${#Rname} -eq 0 ]; then
     Rname=root
 fi
 
+Apex_NS=$(dnsConfig Dns_Zone_Apex_NS)
 if [[ "${Zone}" == *"arpa"* ]]; then
     Zone_Dir="zone/arpa"
-    Apex_NS=$(dnsConfig Dns_Zone_Apex_NS)
     Mname=${Apex_NS}
 else
     Zone_Dir="zone"
-    Apex_NS=dns
-    Mname=${Apex_NS}.${Zone}
+    Mname=dns.${Zone}
 fi
 
 Rpz_Zone=1 # false
@@ -456,6 +455,7 @@ for Zone_Type in ${Zone_Types[@]}; do
             #printf " Server = ${Server},"
             printf " View = ${View},"
             printf " Zone_Type = ${Zone_Type},"
+            printf " Apex_NS = ${Apex_NS},"
             #printf " Origin = ${Origin},"
             printf " Soa = ${Soa}"
             printf "\n"
@@ -521,8 +521,7 @@ for Zone_Type in ${Zone_Types[@]}; do
                                 Mname=""
                             fi
                         else
-                            dns lookup IP ${Apex_NS} -v ${View} &> /dev/null
-                            if [ $? -ne 0 ]; then
+                            if [[ "${Zone}" != *"arpa"* ]]; then
                                 Apex_NS=""
                             fi
                         fi
