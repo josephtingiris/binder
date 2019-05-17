@@ -108,7 +108,7 @@ if [ $? -eq 0 ]; then
             fi
         fi
     done
-    dns delete mx "${Domain}" localhost #-d 15
+    dns delete ns "${Domain}" localhost #-d 15
     echo
 fi
 
