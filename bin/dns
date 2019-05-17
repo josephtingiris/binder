@@ -692,7 +692,13 @@ function dnsLookup() {
                                     echo ${dns_lookup_result}
                                 fi
                             else
-                                echo ${dns_lookup_result}
+                                if [ "${dns_record}" == "IP" ]; then
+                                    if (ipcalc -c ${dns_lookup_result} 2> /dev/null); then
+                                        echo ${dns_lookup_result}
+                                    fi
+                                else
+                                    echo ${dns_lookup_result}
+                                fi
                             fi
                         fi
                     fi
@@ -2651,17 +2657,19 @@ for Dns_RR in ${Dns_RRS[@]}; do
     # validate dns data
     #
 
-    if [ ${#Dns_Data_RR} -gt 0 ] && [ "${Dns_RR}" == "CNAME" ]; then
-        # ensure same zone is stripped from name and proper zone appended
-        Dns_Data_RR=${Dns_Data_RR//+(.)/.}
-        if [ "${Dns_Data_RR:${#Dns_Data_RR}-1:1}" == "." ]; then
-            Dns_Data_RR=${Dns_Data_RR::-1}
-        fi
-        if [ "${Dns_Data_RR:0:1}" == "." ]; then
-            Dns_Data_RR="${Dns_Data_RR:1:${#Dns_Data_RR}-1}"
-        fi
-        if [[ "${Dns_Data_RR}" != *"."* ]]; then
-            Dns_Data_RR+=".${Dns_Zone_RR}"
+    if [ ${#Dns_Data_RR} -gt 0 ]; then
+        if [ "${Dns_RR}" == "CNAME" ] || [ "${Dns_RR}" == "MX" ] || [ "${Dns_RR}" == "NS" ]; then
+            # ensure same zone is stripped from name and proper zone appended
+            Dns_Data_RR=${Dns_Data_RR//+(.)/.}
+            if [ "${Dns_Data_RR:${#Dns_Data_RR}-1:1}" == "." ]; then
+                Dns_Data_RR=${Dns_Data_RR::-1}
+            fi
+            if [ "${Dns_Data_RR:0:1}" == "." ]; then
+                Dns_Data_RR="${Dns_Data_RR:1:${#Dns_Data_RR}-1}"
+            fi
+            if [[ "${Dns_Data_RR}" != *"."* ]]; then
+                Dns_Data_RR+=".${Dns_Zone_RR}"
+            fi
         fi
     fi
 
@@ -2697,6 +2705,9 @@ for Dns_RR in ${Dns_RRS[@]}; do
 
     if [ "${Dns_Action}" == "lookup" ]; then
         Dns_Lookup_Value_RR=$(dnsLookup value "${Dns_RR}" "${Dns_Lookup_FQDN_RR}" "${Dns_Lookup_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}")
+        if [ $? -ne 0 ]; then
+            Dns_RC=1
+        fi
         echo "${Dns_Lookup_FQDN_RR} ${Dns_RR} = ${Dns_Lookup_Value_RR}"
         continue
     fi
