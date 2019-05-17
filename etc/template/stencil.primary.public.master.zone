@@ -8,4 +8,5 @@ $TTL 1H ; default time to live
         3W         ; expire
         1H         ; minimum
         )
-@ NS    ++NS++.
+@ NS    ++APEX_NS++.
+++APEX_GLUE++

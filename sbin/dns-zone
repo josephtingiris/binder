@@ -179,26 +179,33 @@ else
     usage "invalid zone '${1}'"
 fi
 
-if [[ "${Zone}" =~ rpz$ ]]; then
-    Origin="${Zone}"
-    Soa=localhost
-    Nameserver=localhost
-    Mname=localhost
+Rname=$(dnsConfig Dns_Alert_Email 2> /dev/null | awk -F'[,; ]' '{print $1}')
+Rname=${Rname//@/.}
+if [ ${#Rname} -eq 0 ]; then
     Rname=root
-else
-    Origin="${Zone}"
-    Soa="${Zone}"
-    Nameserver=dns
-    Mname=${Nameserver}.${Soa}
-    Rname=root.${Zone}
 fi
 
 if [[ "${Zone}" == *"arpa"* ]]; then
     Zone_Dir="zone/arpa"
+    Apex_NS=$(dnsConfig Dns_Zone_Apex_NS)
+    Mname=${Apex_NS}
 else
     Zone_Dir="zone"
+    Apex_NS=dns
+    Mname=${Apex_NS}.${Zone}
 fi
 
+Rpz_Zone=1 # false
+if [[ "${Zone}" =~ rpz$ ]]; then
+    Origin="${Zone}"
+    Soa=localhost
+    Apex_NS=localhost
+    Mname=localhost
+    Rpz_Zone=0
+else
+    Origin="${Zone}"
+    Soa="${Zone}"
+fi
 
 if [ "${Zone}" != "dns.conf" ]; then
 
@@ -357,6 +364,8 @@ if [ "${Zone}" == "dns.conf" ]; then
         exit
     fi
 
+    rc=0
+
     # this allows an extra (undocumented) argument (for dns.conf searches)
     if [ ${#1} -eq 0 ]; then
         GREP="."
@@ -369,7 +378,7 @@ if [ "${Zone}" == "dns.conf" ]; then
         verbose "Dns_Zone_Line=${Dns_Zone_Line}" $((${Verbose_Level}+10))
 
         declare -l Dns_Zone_Arpa
-        Dns_Zone_Arpa=$(echo "${Dns_Zone_Line}" | awk -F, '{print $1}')
+        Dns_Zone_Arpa=$(echo "${Dns_Zone_Line}" | awk -F, '{print $2}')
         if [ "${Dns_Zone_Arpa}" == "*" ] || [ "${Dns_Zone_Arpa,,}" == "default" ]; then
             Dns_Zone_Arpa=""
         fi
@@ -379,7 +388,7 @@ if [ "${Zone}" == "dns.conf" ]; then
         if [ ${#Dns_Zone_Arpa} -gt 0 ]; then
             Dns_Zone=${Dns_Zone_Arpa}
         else
-            Dns_Zone=$(echo "${Dns_Zone_Line}" | awk -F, '{print $2}')
+            Dns_Zone=$(echo "${Dns_Zone_Line}" | awk -F, '{print $1}')
             if [ "${Dns_Zone}" == "*" ] || [ "${Dns_Zone,,}" == "default" ]; then
                 Dns_Zone=""
             fi
@@ -411,6 +420,9 @@ if [ "${Zone}" == "dns.conf" ]; then
         for Dns_Server in ${Dns_Servers[@]}; do
             $0 "${Dns_Action}" "${Dns_Zone}" "${Dns_Server}" "${Dns_Zone_View}" "${Dns_Zone_Type}"
             if [ $? -ne 0 ]; then
+                rc=1
+            fi
+            if [ $? -ne 0 ]; then
                 if [ "${Dns_Action}" != "check" ]; then
                     aborting "dns zone '${Dns_Zone}', view '${Dns_Zone_View}', failed $0 ${Dns_Action}"
                 fi
@@ -419,6 +431,10 @@ if [ "${Zone}" == "dns.conf" ]; then
 
         echo
     done <<< "$(grep ^Dns_Zone= "${Dns_Conf}" 2> /dev/null | grep ${GREP} | awk -F= '{print $NF}' | awk -F"#" '{print $1}' | sed -e '/[[:space:]]/s///g' | sort)"
+
+    if [ ${rc} -eq 0 ]; then
+        systemctl restart named
+    fi
 
     exit
 fi
@@ -434,21 +450,95 @@ for Zone_Type in ${Zone_Types[@]}; do
         for View in ${Views[@]}; do
 
             #printf "\n"
-            #printf "Zone = ${Zone},"
+            printf "Zone = ${Zone},"
             #printf " Zone_Dir = ${Zone_Dir},"
             #printf " Action = ${Dns_Action},"
             #printf " Server = ${Server},"
-            #printf " View = ${View},"
-            #printf " Zone_Type = ${Zone_Type},"
+            printf " View = ${View},"
+            printf " Zone_Type = ${Zone_Type},"
             #printf " Origin = ${Origin},"
-            #printf " Soa = ${Soa}"
-            #printf "\n\n"
+            printf " Soa = ${Soa}"
+            printf "\n"
 
+            Apex_NS_Glue=""
+            Apex_NS_IP=""
+            Apex_NS_Match=""
+
+            if [ "${Zone_Type}" == "master" ] && [ ${Rpz_Zone} -eq 1 ]; then
+
+                if [ "${View}" == "private" ] || [ "${View}" == "public" ]; then
+
+                    if [ ${#Apex_NS} -gt 0 ]; then
+
+                        NS_Prefixes=(dns ns sdns sns)
+                        for NS_Prefix in ${NS_Prefixes[@]}; do
+                            Apex_NS_Match="${NS_Prefix}.${Zone}"
+                            if [ "${Apex_NS_Match}" == "${Apex_NS}" ]; then
+                                break
+                            else
+                                unset -v Apex_NS_Match
+                            fi
+                            for (( counter=0; counter<100; counter++ )); do
+                                if [ $counter -lt 10 ]; then
+                                    Apex_NS_Match="${NS_Prefix}0${counter}.${Zone}"
+                                    if [ "${Apex_NS_Match}" == "${Apex_NS}" ]; then
+                                        break
+                                    else
+                                        unset -v Apex_NS_Match
+                                    fi
+                                fi
+                                Apex_NS_Match="${NS_Prefix}${counter}.${Zone}"
+                                if [ "${Apex_NS_Match}" == "${Apex_NS}" ]; then
+                                    break
+                                else
+                                    unset -v Apex_NS_Match
+                                fi
+                            done
+                            if [ "${Apex_NS_Match}" != "" ]; then
+                                break
+                            fi
+                        done
+
+                        if [ ${#Apex_NS_Match} -gt 0 ]; then
+                            if [ "${View}" == "private" ]; then
+                                Apex_NS_IP=$(dnsConfig Dns_Zone_Apex_NS_Glue_Private)
+                            fi
+
+                            if [ "${View}" == "public" ]; then
+                                Apex_NS_IP=$(dnsConfig Dns_Zone_Apex_NS_Glue_Public)
+                            fi
+
+                            if (ipcalc -c ${Apex_NS_IP} 2> /dev/null); then
+                                Apex_NS=${Apex_NS_Match}
+                                if [[ "${Zone}" == *"arpa"* ]]; then
+                                    Apex_NS_Glue=""
+                                else
+                                    Apex_NS_Glue="${Apex_NS}. IN A ${Apex_NS_IP}"
+                                fi
+                                Mname=${Apex_NS}
+                            else
+                                Apex_NS=""
+                                Mname=""
+                            fi
+                        else
+                            dns lookup IP ${Apex_NS} -v ${View} &> /dev/null
+                            if [ $? -ne 0 ]; then
+                                Apex_NS=""
+                            fi
+                        fi
+                    fi
+                fi
+            fi
+
+            if [ ${#Apex_NS} -eq 0 ]; then
+                Apex_NS="dns"
+                Mname=${Apex_NS}.${Zone}
+                Apex_NS_Glue=""
+            fi
 
             #
             # process primary & secondary zone configs
             #
-
 
             Template_Zones_Conf="${Dns_Dir}/etc/template/stencil.${Server}.${View}.${Zone_Type}.zones.conf"
             Zones_Conf_Basename="named.${Server}.${View}.${Zone_Type}.zones.conf"
@@ -543,7 +633,7 @@ for Zone_Type in ${Zone_Types[@]}; do
                     Add_Rc=0
                     [ $Add_Rc -eq 0 ] && echo >> "${Zones_Conf}"
                     Add_Rc=$?
-                    [ $Add_Rc -eq 0 ] && sed -e "s#++NS++#${Nameserver}#g" -e "s#++MNAME++#${Mname}#g" -e "s#++RNAME++#${Rname}#g" -e "s#++ORIGIN++#${Origin}#g" -e "s#++SERIAL++#${Serial}#g" -e "s#++SERVER++#${Zone_Server}#g" -e "s#++SOA++#${Soa}#g" -e "s#++VIEW++#${View}#g" -e "s#++ZONE++#${Zone}#g" -e "s#++ZONE_DIR++#${Zone_Dir}#g" "${Template_Zones_Conf}" >> "${Zones_Conf}"
+                    [ $Add_Rc -eq 0 ] && sed -e "s#++APEX_GLUE++#${Apex_NS_Glue}#g" -e "s#++APEX_NS++#${Apex_NS}#g" -e "s#++MNAME++#${Mname}#g" -e "s#++RNAME++#${Rname}#g" -e "s#++ORIGIN++#${Origin}#g" -e "s#++SERIAL++#${Serial}#g" -e "s#++SERVER++#${Zone_Server}#g" -e "s#++SOA++#${Soa}#g" -e "s#++VIEW++#${View}#g" -e "s#++ZONE++#${Zone}#g" -e "s#++ZONE_DIR++#${Zone_Dir}#g" "${Template_Zones_Conf}" >> "${Zones_Conf}"
                     if [ "${Comment}" != "" ]; then
                         [ $Add_Rc -eq 0 ] && sed -i -e "s#++COMMENT++#// ${Comment}#g" ${Zones_Conf}
                     else
@@ -640,7 +730,7 @@ for Zone_Type in ${Zone_Types[@]}; do
                         dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:$(basename ${Template_Zone_File})=TEMPLATE"
 
                         Add_Rc=0
-                        [ $Add_Rc -eq 0 ] && sed -e "s#++NS++#${Nameserver}#g" -e "s#++MNAME++#${Mname}#g" -e "s#++RNAME++#${Rname}#g" -e "s#++ORIGIN++#${Origin}#g" -e "s#++SERIAL++#${Serial}#g" -e "s#++SOA++#${Soa}#g" -e "s#++VIEW++#${View}#g" -e "s#++ZONE++#${Zone}#g" -e "s#++ZONE_DIR++#${Zone_Dir}#g" "${Template_Zone_File}" >> "${Zone_File}"
+                        [ $Add_Rc -eq 0 ] && sed -e "s#++APEX_GLUE++#${Apex_NS_Glue}#g" -e "s#++APEX_NS++#${Apex_NS}#g" -e "s#++MNAME++#${Mname}#g" -e "s#++RNAME++#${Rname}#g" -e "s#++ORIGIN++#${Origin}#g" -e "s#++SERIAL++#${Serial}#g" -e "s#++SOA++#${Soa}#g" -e "s#++VIEW++#${View}#g" -e "s#++ZONE++#${Zone}#g" -e "s#++ZONE_DIR++#${Zone_Dir}#g" "${Template_Zone_File}" >> "${Zone_File}"
                         if [ "${Comment}" != "" ]; then
                             [ $Add_Rc -eq 0 ] && sed -i -e "s#++COMMENT++#// ${Comment}#g" ${Zone_File}
                         else
@@ -792,7 +882,6 @@ for Zone_Type in ${Zone_Types[@]}; do
             # named-checkconf, once, for every primary record
             #
 
-
             if [ "${Server}" == "primary" ] && [ "${Zone_Type}" == "master" ]; then
                 Zone_Status=$(named-checkzone "${Zone}" "${Zone_File}" 2>&1 | tr '\n' ' ')
                 if [ ${#Zone_Status} -eq 0 ] || [ "${Zone_Status}" == "" ] || [ ! -r "${Zone_File}" ]; then
@@ -814,9 +903,6 @@ for Zone_Type in ${Zone_Types[@]}; do
 done
 
 rc=0
-
-# meh ...
-svn perms "${Dns_Dir}" &> /dev/null
 
 if [ ${#Warnings} -gt 0 ]; then
     printf "\n"
