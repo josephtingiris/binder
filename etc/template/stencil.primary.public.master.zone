@@ -1,10 +1,11 @@
+; https://www.ietf.org/rfc/rfc1912.txt
 $ORIGIN ++ORIGIN++.
-$TTL 3600 ; 1 hour
-@ IN SOA ++SOA++. root.++ZONE++. (
-        ++SERIAL++ ; serial (DO NOT USE date based values! increment +1 only)
-        900        ; refresh (15 minutes)
-        600        ; retry (10 minutes)
-        604800     ; expire (1 week)
-        300        ; minimum (5 minutes)
+$TTL 1H ; default time to live
+@ IN SOA ++MNAME++. ++RNAME++. (
+        ++SERIAL++ ; serial (do NOT use date based values)
+        20M        ; refresh
+        5M         ; retry
+        3W         ; expire
+        1H         ; minimum
         )
-@ NS localhost.
+@ NS    ++NS++.

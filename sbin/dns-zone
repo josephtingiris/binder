@@ -182,9 +182,15 @@ fi
 if [[ "${Zone}" =~ rpz$ ]]; then
     Origin="${Zone}"
     Soa=localhost
+    Nameserver=localhost
+    Mname=localhost
+    Rname=root
 else
     Origin="${Zone}"
     Soa="${Zone}"
+    Nameserver=dns
+    Mname=${Nameserver}.${Soa}
+    Rname=root.${Zone}
 fi
 
 if [[ "${Zone}" == *"arpa"* ]]; then
@@ -537,7 +543,7 @@ for Zone_Type in ${Zone_Types[@]}; do
                     Add_Rc=0
                     [ $Add_Rc -eq 0 ] && echo >> "${Zones_Conf}"
                     Add_Rc=$?
-                    [ $Add_Rc -eq 0 ] && sed -e "s#++ORIGIN++#${Origin}#g" -e "s#++SERIAL++#${Serial}#g" -e "s#++SERVER++#${Zone_Server}#g" -e "s#++SOA++#${Soa}#g" -e "s#++VIEW++#${View}#g" -e "s#++ZONE++#${Zone}#g" -e "s#++ZONE_DIR++#${Zone_Dir}#g" "${Template_Zones_Conf}" >> "${Zones_Conf}"
+                    [ $Add_Rc -eq 0 ] && sed -e "s#++NS++#${Nameserver}#g" -e "s#++MNAME++#${Mname}#g" -e "s#++RNAME++#${Rname}#g" -e "s#++ORIGIN++#${Origin}#g" -e "s#++SERIAL++#${Serial}#g" -e "s#++SERVER++#${Zone_Server}#g" -e "s#++SOA++#${Soa}#g" -e "s#++VIEW++#${View}#g" -e "s#++ZONE++#${Zone}#g" -e "s#++ZONE_DIR++#${Zone_Dir}#g" "${Template_Zones_Conf}" >> "${Zones_Conf}"
                     if [ "${Comment}" != "" ]; then
                         [ $Add_Rc -eq 0 ] && sed -i -e "s#++COMMENT++#// ${Comment}#g" ${Zones_Conf}
                     else
@@ -634,7 +640,7 @@ for Zone_Type in ${Zone_Types[@]}; do
                         dnsEcho "[${Zone}][${Dns_Action}][${Server}][${View}]:$(basename ${Template_Zone_File})=TEMPLATE"
 
                         Add_Rc=0
-                        [ $Add_Rc -eq 0 ] && sed -e "s#++ORIGIN++#${Origin}#g" -e "s#++SERIAL++#${Serial}#g" -e "s#++SOA++#${Soa}#g" -e "s#++VIEW++#${View}#g" -e "s#++ZONE++#${Zone}#g" -e "s#++ZONE_DIR++#${Zone_Dir}#g" "${Template_Zone_File}" >> "${Zone_File}"
+                        [ $Add_Rc -eq 0 ] && sed -e "s#++NS++#${Nameserver}#g" -e "s#++MNAME++#${Mname}#g" -e "s#++RNAME++#${Rname}#g" -e "s#++ORIGIN++#${Origin}#g" -e "s#++SERIAL++#${Serial}#g" -e "s#++SOA++#${Soa}#g" -e "s#++VIEW++#${View}#g" -e "s#++ZONE++#${Zone}#g" -e "s#++ZONE_DIR++#${Zone_Dir}#g" "${Template_Zone_File}" >> "${Zone_File}"
                         if [ "${Comment}" != "" ]; then
                             [ $Add_Rc -eq 0 ] && sed -i -e "s#++COMMENT++#// ${Comment}#g" ${Zone_File}
                         else
