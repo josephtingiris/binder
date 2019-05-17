@@ -1,0 +1,147 @@
+#!/bin/bash
+
+# convert an axfr transfer to dns (script) inputs
+
+# 20180517, joseph.tingiris@gmail.com
+
+Domain=$1
+Server=$2
+Keyfile=$3
+
+function usage() {
+    echo "usage: $0 <domain> [server] [keyfile]"
+    exit 2
+}
+
+if [ ${#1} -eq 0 ]; then
+    usage
+fi
+
+unset Verbose
+
+shopt -s extglob
+
+#dns lookup axfr "${Domain}" -s "${Server}" -k "${Keyfile}" | sed -e '/[[:space:]]\+/s//++SPACE++/g'
+
+export Verbose=0
+
+Zone_Lines=($(dns lookup axfr ${Domain} -s ${Server} -k ${Keyfile} | sed -e '/[[:space:]]\+/s//++SPACE++/g' | sort))
+
+# A & AAAA first
+for Zone_Line in ${Zone_Lines[@]}; do
+    Zone_Line=${Zone_Line//++SPACE++/ }
+    Dns_Data=${Zone_Line##* }
+    Dns_Name=${Zone_Line%% *}
+    if [[ "${Zone_Line}" == *" IN A "* ]]; then
+        dns add a ${Dns_Name} ${Dns_Data} -m
+        dns add ptr ${Dns_Name} ${Dns_Data} -f
+        if [ $? -ne 0 ]; then
+            echo dns add a ${Dns_Name} ${Dns_Data} -a -m
+            echo "${Zone_Line}"
+        fi
+        continue
+    else
+        if [[ "${Zone_Line}" == *" IN AAAA "* ]]; then
+            dns add aaaa ${Dns_Name} ${Dns_Data} -a -m
+            dns update ptr ${Dns_Name} ${Dns_Data} -f
+            if [ $? -ne 0 ]; then
+                echo dns add aaaa ${Dns_Name} ${Dns_Data} -a -m
+                echo "${Zone_Line}"
+            fi
+            continue
+        fi
+    fi
+done
+
+# CNAME & TXT second
+for Zone_Line in ${Zone_Lines[@]}; do
+    Zone_Line=${Zone_Line//++SPACE++/ }
+    Dns_Data=${Zone_Line##* }
+    Dns_Name=${Zone_Line%% *}
+    if [[ "${Zone_Line}" == *" IN CNAME "* ]]; then
+        dns add cname ${Dns_Name} ${Dns_Data} -f
+        if [ $? -ne 0 ]; then
+            echo dns add cname ${Dns_Name} ${Dns_Data} -f
+            echo "${Zone_Line}"
+        fi
+        continue
+    else
+        if [[ "${Zone_Line}" == *" IN TXT "* ]]; then
+            Dns_Data=${Zone_Line##*TXT }
+            dns add txt ${Dns_Name} "${Dns_Data}" -m -f
+            if [ $? -ne 0 ]; then
+                echo dns add txt ${Dns_Name} \"${Dns_Data}\" -m -f -d 12
+                echo "${Zone_Line}"
+                exit
+            fi
+            continue
+        fi
+    fi
+done
+
+# only do this for authoritative zones
+ls -l /opt/dns/zone/${Domain}.*.zone &> /dev/null
+if [ $? -eq 0 ]; then
+    # MX & NS records next
+    for Zone_Line in ${Zone_Lines[@]}; do
+        Zone_Line=${Zone_Line//++SPACE++/ }
+        Dns_Data=${Zone_Line##* }
+        Dns_Name=${Zone_Line%% *}
+        Dns_Priority=""
+        if [[ "${Zone_Line}" == *" IN MX "* ]]; then
+            Dns_Priority=${Zone_Line% *}
+            Dns_Priority=${Dns_Priority##* }
+            dns add mx ${Dns_Name} ${Dns_Data} -p ${Dns_Priority} -m
+            if [ $? -ne 0 ]; then
+                echo dns add mx ${Dns_Name} ${Dns_Data} -p ${Dns_Priority} -m
+                echo "${Zone_Line}"
+            fi
+            continue
+        else
+            if [[ "${Zone_Line}" == *" IN NS "* ]]; then
+                dns add ns ${Dns_Name} ${Dns_Data} -m
+                if [ $? -ne 0 ]; then
+                    echo dns add ns ${Dns_Name} ${Dns_Data} -m
+                    echo "${Zone_Line}"
+                fi
+                continue
+            fi
+        fi
+    done
+    dns delete mx "${Domain}" localhost #-d 15
+    echo
+fi
+
+# display unknown records last
+for Zone_Line in ${Zone_Lines[@]}; do
+    Zone_Line=${Zone_Line//++SPACE++/ }
+    Dns_Data=${Zone_Line##* }
+    Dns_Name=${Zone_Line%% *}
+    Dns_Priority=""
+    if [[ "${Zone_Line}" == *" IN A "* ]]; then
+        continue
+    else
+        if [[ "${Zone_Line}" == *" IN AAAA "* ]]; then
+            continue
+        else
+            if [[ "${Zone_Line}" == *" IN CNAME "* ]]; then
+                continue
+            else
+                if [[ "${Zone_Line}" == *" IN MX "* ]]; then
+                    continue
+                else
+                    if [[ "${Zone_Line}" == *" IN NS "* ]]; then
+                        continue
+                    else
+                        if [[ "${Zone_Line}" == *" IN TXT "* ]]; then
+                            continue
+                        else
+                            echo "$Zone_Line"
+                        fi
+                    fi
+                fi
+            fi
+        fi
+    fi
+done
+
