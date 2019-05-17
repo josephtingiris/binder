@@ -72,7 +72,6 @@ for Zone_Line in ${Zone_Lines[@]}; do
             if [ $? -ne 0 ]; then
                 echo dns add txt ${Dns_Name} \"${Dns_Data}\" -m -f -d 12
                 echo "${Zone_Line}"
-                exit
             fi
             continue
         fi
