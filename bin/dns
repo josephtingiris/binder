@@ -3240,10 +3240,13 @@ if [ "${Dns_RR}" == "NS" ]; then
     done
 
     if [ ${Dns_Rndc_Flag} -eq 0 ]; then
-        if [ "${Dns_Server_IP_RR}" == "127.0.0.1" ] || [ "${Dns_Server_IP_RR}" == "::1" ]; then
-            rndc sync -clean &> /dev/null
-            if [ $? -ne 0 ]; then
-                dnsAlert "rndc sync -clean [FAILED]"
+        if [ -r "${Dns_Dir}/etc/named.shared.masters.conf" ]; then
+            grep -q "${Dns_Server_IP_RR};" "${Dns_Dir}/etc/named.shared.masters.conf"
+            if [ $? -eq 0 ]; then
+                rndc sync -clean &> /dev/null
+                if [ $? -ne 0 ]; then
+                    dnsAlert "rndc sync -clean [FAILED]"
+                fi
             fi
         fi
     fi
