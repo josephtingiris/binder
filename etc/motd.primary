@@ -1,0 +1,35 @@
+
+HOWTO administer DNS primary by example ...
+
+
+1) Update A & PTR records at the same time. (Most Common)
+
+# dns update A test.domain.com 10.11.12.13 -a
+
+
+2) Only update A record. (When you don't want the PTR updated, too)
+
+# dns update A test.domain.com 10.11.12.13
+
+
+3) Only update PTR record. (When you don't want the A record updated, too)
+
+# dns update PTR test.domain.com 10.11.12.13
+
+
+4) Update CNAME record. (When all you want is an alias from 'this' to 'that')
+
+# dns update CNAME this-cname.domain.com that-realname.domain.com
+
+
+5) Add an A & PTR record. (Safest; will NOT make changes if another record exists)
+
+# dns add A test.domain.com 10.11.12.13 -a
+
+
+NOTES:
+
+* dns --help
+* Pay attention to the output.
+* Use FULLY QUALIFIED DOMAIN NAMES (FQDN)
+

@@ -4,16 +4,27 @@
 
 # 20180517, joseph.tingiris@gmail.com
 
-Domain=$1
-Server=$2
-Keyfile=$3
+Dns_Dir=$(dirname $(dirname "$(readlink -e "$0")"))
+Dns_Source="${Dns_Dir}/bin/dns"
+if [ ! -r "${Dns_Source}" ]; then
+    printf "\naborting, '${Dns_Source}' source file not readable\n\n"
+    exit 2
+fi
+source "${Dns_Source}"
+
+Domain=${1}
+Records="${2^^}"
+Server=${3}
+Keyfile=${4}
 
 function usage() {
-    echo "usage: $0 <domain> [server] [keyfile]"
+    echo
+    echo "usage: $0 <domain> <record(s)> [server] [keyfile]"
+    echo
     exit 2
 }
 
-if [ ${#1} -eq 0 ]; then
+if [ ${#1} -eq 0 ] || [ ${#1} -eq 0 ]; then
     usage
 fi
 
@@ -21,95 +32,285 @@ unset Verbose
 
 shopt -s extglob
 
-#dns lookup axfr "${Domain}" -s "${Server}" -k "${Keyfile}" | sed -e '/[[:space:]]\+/s//++SPACE++/g'
+dnsEcho "Domain=$Domain"
+dnsEcho "Records=$Records"
+dnsEcho "Server=$Server"
+dnsEcho "Keyfile=$Keyfile"
 
+Action="update" # add, update
+Action="add"
+
+Force=1 # 0=true
 export Verbose=0
+export Test=1
 
-Zone_Lines=($(dns lookup axfr ${Domain} -s ${Server} -k ${Keyfile} | sed -e '/[[:space:]]\+/s//++SPACE++/g' | sort))
+Force_Arg=""
+if [ ${Force} -eq 0 ]; then
+    Force_Arg="-f"
+fi
 
-# A & AAAA first
-for Zone_Line in ${Zone_Lines[@]}; do
-    Zone_Line=${Zone_Line//++SPACE++/ }
-    Dns_Data=${Zone_Line##* }
-    Dns_Name=${Zone_Line%% *}
-    if [[ "${Zone_Line}" == *" IN A "* ]]; then
-        dns add a ${Dns_Name} ${Dns_Data} -m
-        dns add ptr ${Dns_Name} ${Dns_Data} -f
-        if [ $? -ne 0 ]; then
-            echo dns add a ${Dns_Name} ${Dns_Data} -a -m
-            echo "${Zone_Line}"
-        fi
-        continue
-    else
-        if [[ "${Zone_Line}" == *" IN AAAA "* ]]; then
-            dns add aaaa ${Dns_Name} ${Dns_Data} -a -m
-            dns update ptr ${Dns_Name} ${Dns_Data} -f
+Dns_Lookup_Args="${Domain}"
+
+if [ ${#Server} -gt 0 ]; then
+    Dns_Lookup_Args+=" -s ${Server}"
+fi
+
+if [ ${#Keyfile} -gt 0 ]; then
+    if [ -r "${Keyfile}" ]; then
+        Dns_Lookup_Args+=" -k ${Keyfile}"
+    fi
+fi
+
+Zone_Lines=($(dns lookup axfr ${Dns_Lookup_Args} | grep -v dns | sed -e '/[[:space:]]\+/s//++SPACE++/g' | sort))
+
+if [ ${#Zone_Lines} -eq 0 ]; then
+    # second try, force a transfer
+    Zone_Lines=($(dns lookup axfr ${Dns_Lookup_Args} -f | grep -v dns | sed -e '/[[:space:]]\+/s//++SPACE++/g' | sort))
+fi
+
+if [ ${#Zone_Lines} -eq 0 ]; then
+    printf "\naborting, zone transfer failed\n\n"
+    exit 2
+fi
+
+for Record in ${Records}; do
+
+    if [ "${Record}" == "A" ] || [ "${Record}" == "ALL" ]; then
+        Dns_Args="dns ${Action} a localhost.${Domain} 127.0.0.1 -a -m"
+
+        if [ ${Test} -eq 0 ]; then
+            echo "# ${Zone_Line}"
+            echo $Dns_Args
+            echo
+        else
+            eval $Dns_Args
             if [ $? -ne 0 ]; then
-                echo dns add aaaa ${Dns_Name} ${Dns_Data} -a -m
-                echo "${Zone_Line}"
+                echo "# ${Zone_Line}"
+                echo $Dns_Args
+                echo
             fi
-            continue
         fi
     fi
-done
 
-# CNAME & TXT second
-for Zone_Line in ${Zone_Lines[@]}; do
-    Zone_Line=${Zone_Line//++SPACE++/ }
-    Dns_Data=${Zone_Line##* }
-    Dns_Name=${Zone_Line%% *}
-    if [[ "${Zone_Line}" == *" IN CNAME "* ]]; then
-        dns add cname ${Dns_Name} ${Dns_Data} -f
-        if [ $? -ne 0 ]; then
-            echo dns add cname ${Dns_Name} ${Dns_Data} -f
-            echo "${Zone_Line}"
-        fi
-        continue
-    else
-        if [[ "${Zone_Line}" == *" IN TXT "* ]]; then
-            Dns_Data=${Zone_Line##*TXT }
-            dns add txt ${Dns_Name} "${Dns_Data}" -m -f
+    if [ "${Record}" == "AAAA" ] || [ "${Record}" == "ALL" ]; then
+        Dns_Args="dns ${Action} aaaa localhost.${Domain} ::1 -a -m"
+
+        if [ ${Test} -eq 0 ]; then
+            echo "# ${Zone_Line}"
+            echo $Dns_Args
+            echo
+        else
+            eval $Dns_Args
             if [ $? -ne 0 ]; then
-                echo dns add txt ${Dns_Name} \"${Dns_Data}\" -m -f -d 12
-                echo "${Zone_Line}"
+                echo "# ${Zone_Line}"
+                echo $Dns_Args
+                echo
             fi
-            continue
         fi
     fi
-done
 
-# only do this for authoritative zones
-ls -l /opt/dns/zone/${Domain}.*.zone &> /dev/null
-if [ $? -eq 0 ]; then
-    # MX & NS records next
+    # A & AAAA first
     for Zone_Line in ${Zone_Lines[@]}; do
+        unset -v Dns_Args
         Zone_Line=${Zone_Line//++SPACE++/ }
         Dns_Data=${Zone_Line##* }
         Dns_Name=${Zone_Line%% *}
-        Dns_Priority=""
-        if [[ "${Zone_Line}" == *" IN MX "* ]]; then
-            Dns_Priority=${Zone_Line% *}
-            Dns_Priority=${Dns_Priority##* }
-            dns add mx ${Dns_Name} ${Dns_Data} -p ${Dns_Priority} -m
-            if [ $? -ne 0 ]; then
-                echo dns add mx ${Dns_Name} ${Dns_Data} -p ${Dns_Priority} -m
-                echo "${Zone_Line}"
+        if [[ "${Zone_Line}" == *" IN A "* ]]; then
+            if [ "${Record}" != "A" ] && [ "${Record}" != "ALL" ]; then continue; fi
+
+            Dns_Args="dns ${Action} a ${Dns_Name} \"${Dns_Data}\" -a -m"
+
+            if [ ${Test} -eq 0 ]; then
+                echo "# ${Zone_Line}"
+                echo $Dns_Args
+                echo
+            else
+                eval $Dns_Args
+                if [ $? -ne 0 ]; then
+                    echo "# ${Zone_Line}"
+                    echo $Dns_Args
+                    echo
+                fi
             fi
+
             continue
         else
-            if [[ "${Zone_Line}" == *" IN NS "* ]]; then
-                dns add ns ${Dns_Name} ${Dns_Data} -m
-                if [ $? -ne 0 ]; then
-                    echo dns add ns ${Dns_Name} ${Dns_Data} -m
-                    echo "${Zone_Line}"
+            if [[ "${Zone_Line}" == *" IN AAAA "* ]]; then
+                if [ "${Record}" != "AAAA" ] && [ "${Record}" != "ALL" ]; then continue; fi
+
+                Dns_Args="dns ${Action} aaaa ${Dns_Name} \"${Dns_Data}\" -a -m"
+
+                if [ ${Test} -eq 0 ]; then
+                    echo "# ${Zone_Line}"
+                    echo $Dns_Args
+                    echo
+                else
+                    eval $Dns_Args
+                    if [ $? -ne 0 ]; then
+                        echo "# ${Zone_Line}"
+                        echo $Dns_Args
+                        echo
+                    fi
                 fi
+
                 continue
             fi
         fi
     done
-    dns delete ns "${Domain}" localhost #-d 15
-    echo
-fi
+
+    # CNAME, SRV, & TXT second
+    for Zone_Line in ${Zone_Lines[@]}; do
+        unset -v Dns_Args
+        Zone_Line=${Zone_Line//++SPACE++/ }
+        Dns_Data=${Zone_Line##* }
+        Dns_Name=${Zone_Line%% *}
+        if [[ "${Zone_Line}" == *" IN CNAME "* ]]; then
+            if [ "${Record}" != "CNAME" ] && [ "${Record}" != "ALL" ]; then continue; fi
+
+            Dns_Args="dns ${Action} cname ${Dns_Name} \"${Dns_Data}\" ${Force_Arg}"
+
+            if [ ${Test} -eq 0 ]; then
+                echo "# ${Zone_Line}"
+                echo $Dns_Args
+                echo
+            else
+                eval $Dns_Args
+                if [ $? -ne 0 ]; then
+                    echo "# ${Zone_Line}"
+                    echo $Dns_Args
+                    echo
+                fi
+            fi
+
+            continue
+        else
+            if [[ "${Zone_Line}" == *" IN SRV "* ]]; then
+                if [ "${Record}" != "SRV" ] && [ "${Record}" != "ALL" ]; then continue; fi
+
+                declare -i Dns_Data_Priority=$(echo "${Zone_Line}" | awk '{print $5}')
+                declare -i Dns_Data_Weight=$(echo "${Zone_Line}" | awk '{print $6}')
+                declare -i Dns_Data_Port=$(echo "${Zone_Line}" | awk '{print $7}')
+
+                Dns_Args="dns ${Action} srv ${Dns_Name} \"${Dns_Data}\" -m"
+
+                if [ $Dns_Data_Port -gt 0 ]; then
+                    Dns_Args+=" -P ${Dns_Data_Port}"
+                fi
+
+                if [ $Dns_Data_Priority -gt 0 ]; then
+                    Dns_Args+=" -p ${Dns_Data_Priority}"
+                fi
+
+                if [ $Dns_Data_Weight -gt 0 ]; then
+                    Dns_Args+=" -w ${Dns_Data_Weight}"
+                fi
+
+                if [ ${Test} -eq 0 ]; then
+                    echo "# ${Zone_Line}"
+                    echo $Dns_Args
+                    echo
+                else
+                    eval $Dns_Args
+                    if [ $? -ne 0 ]; then
+                        echo "# ${Zone_Line}"
+                        echo $Dns_Args
+                        echo
+                    fi
+                fi
+
+                unset -v Dns_Data_Port Dns_Data_Priority Dns_Data_Weight
+
+                continue
+            else
+                if [[ "${Zone_Line}" == *" IN TXT "* ]]; then
+                    if [ "${Record}" != "TXT" ] && [ "${Record}" != "ALL" ]; then continue; fi
+
+                    Dns_Data=${Zone_Line##*TXT }
+
+                    Dns_Args="dns ${Action} txt ${Dns_Name} \"${Dns_Data}\" -m ${Force_Arg}"
+
+                    if [ ${Test} -eq 0 ]; then
+                        echo "# ${Zone_Line}"
+                        echo $Dns_Args
+                        echo
+                    else
+                        eval $Dns_Args
+                        if [ $? -ne 0 ]; then
+                            echo "# ${Zone_Line}"
+                            echo $Dns_Args
+                            echo
+                        fi
+                    fi
+
+                    continue
+                fi
+            fi
+        fi
+    done
+
+    # only do this for authoritative zones
+    ls -l /opt/dns/zone/${Domain}.*.zone &> /dev/null
+    if [ $? -eq 0 ]; then
+        # MX & NS records next
+        for Zone_Line in ${Zone_Lines[@]}; do
+            unset -v Dns_Args
+            Zone_Line=${Zone_Line//++SPACE++/ }
+            Dns_Data=${Zone_Line##* }
+            Dns_Name=${Zone_Line%% *}
+            Dns_Priority=""
+            if [[ "${Zone_Line}" == *" IN MX "* ]]; then
+                if [ "${Record}" != "MX" ] && [ "${Record}" != "ALL" ]; then continue; fi
+                Dns_Data_Priority=${Zone_Line% *}
+                Dns_Data_Priority=${Dns_Data_Priority##* }
+
+                if [ $Dns_Data_Priority -gt 0 ]; then
+                    Dns_Args+=" -p ${Dns_Data_Priority}"
+                fi
+
+                Dns_Args="dns ${Action} mx ${Dns_Name} \"${Dns_Data}\" -m ${Force_Arg}"
+
+                if [ ${Test} -eq 0 ]; then
+                    echo "# ${Zone_Line}"
+                    echo $Dns_Args
+                    echo
+                else
+                    eval $Dns_Args
+                    if [ $? -ne 0 ]; then
+                        echo "# ${Zone_Line}"
+                        echo $Dns_Args
+                        echo
+                    fi
+                fi
+
+                continue
+            else
+                if [[ "${Zone_Line}" == *" IN NS "* ]]; then
+                    if [ "${Record}" != "NS" ] && [ "${Record}" != "ALL" ]; then continue; fi
+
+                    Dns_Args="dns ${Action} ns ${Dns_Name} \"${Dns_Data}\" -m ${Force_Arg}"
+
+                    if [ ${Test} -eq 0 ]; then
+                        echo "# ${Zone_Line}"
+                        echo $Dns_Args
+                        echo
+                    else
+                        eval $Dns_Args
+                        if [ $? -ne 0 ]; then
+                            echo "# ${Zone_Line}"
+                            echo $Dns_Args
+                            echo
+                        fi
+                    fi
+
+                    continue
+                fi
+            fi
+        done
+    fi
+done
+
+echo
+echo
 
 # display unknown records last
 for Zone_Line in ${Zone_Lines[@]}; do
@@ -132,10 +333,14 @@ for Zone_Line in ${Zone_Lines[@]}; do
                     if [[ "${Zone_Line}" == *" IN NS "* ]]; then
                         continue
                     else
-                        if [[ "${Zone_Line}" == *" IN TXT "* ]]; then
+                        if [[ "${Zone_Line}" == *" IN SRV "* ]]; then
                             continue
                         else
-                            echo "$Zone_Line"
+                            if [[ "${Zone_Line}" == *" IN TXT "* ]]; then
+                                continue
+                            else
+                                echo "$Zone_Line"
+                            fi
                         fi
                     fi
                 fi
@@ -143,4 +348,3 @@ for Zone_Line in ${Zone_Lines[@]}; do
         fi
     fi
 done
-

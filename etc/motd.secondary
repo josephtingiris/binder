@@ -1,0 +1,18 @@
+
+HOWTO administer DNS secondary by example ...
+
+
+1) Please make record changes on primary DNS, & follow instructions there ...
+
+# ssh dns
+
+
+2) Re-install (re-sync) secondary to primary
+
+# dns-setup reinstall secondary
+
+
+NOTES:
+
+* Pay attention to the output.
+

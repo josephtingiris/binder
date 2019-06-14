@@ -12,9 +12,10 @@ shopt -s extglob
 
 PATH=${PATH}:/bin:/usr/bin:/sbin:/usr/sbin
 
+declare -i Verbose_Level
 Verbose_Level_Prefix=on
 Verbose_Pad_Left=12
-Verbose_Pad_Right=50
+Verbose_Pad_Right=30
 
 Dns_Config_Basename="dns.conf"
 
@@ -733,6 +734,7 @@ function dnsStatus {
         Dns_Status_Trace="${FUNCNAME}"
     fi
 
+    local -i verbose_level=${Verbose_Level}
     Dns_Status=""
 
     if [ ${#Dns_Action_RR} -gt 0 ]; then
@@ -779,21 +781,23 @@ function dnsStatus {
         fi
     fi
 
-    if [ ${#Dns_Status} -gt 0 ]; then
-        Dns_Status+=", "
-    fi
+    if [ ${verbose_level} -gt 0 ]; then
+        if [ ${#Dns_Status} -gt 0 ]; then
+            Dns_Status+=", "
+        fi
 
-    if [ ${#Dns_Server_IP_RR} -gt 0 ]; then
-        Dns_Status+="server ${Dns_Server_IP_RR}"
-    else
-        if [ ${#Dns_Server_IP} -gt 0 ]; then
-            Dns_Status+="server ${Dns_Server_IP}"
+        if [ ${#Dns_Server_IP_RR} -gt 0 ]; then
+            Dns_Status+="server ${Dns_Server_IP_RR}"
         else
-            if [ ${#Dns_Server_RR} -gt 0 ]; then
-                Dns_Status+="server ${Dns_Server_RR}"
+            if [ ${#Dns_Server_IP} -gt 0 ]; then
+                Dns_Status+="server ${Dns_Server_IP}"
             else
-                if [ ${#Dns_Server} -gt 0 ]; then
-                    Dns_Status+="server ${Dns_Server}"
+                if [ ${#Dns_Server_RR} -gt 0 ]; then
+                    Dns_Status+="server ${Dns_Server_RR}"
+                else
+                    if [ ${#Dns_Server} -gt 0 ]; then
+                        Dns_Status+="server ${Dns_Server}"
+                    fi
                 fi
             fi
         fi
@@ -807,17 +811,19 @@ function dnsStatus {
         fi
     fi
 
-    if [ ${#Dns_Zone_Key_RR} -gt 0 ]; then
-        Dns_Status+=", key ${Dns_Zone_Key_RR}"
-    else
-        if [ ${#Dns_Zone_Key} -gt 0 ]; then
-            Dns_Status+=", key ${Dns_Zone_Key}"
+    if [ ${verbose_level} -gt 0 ]; then
+        if [ ${#Dns_Zone_Key_RR} -gt 0 ]; then
+            Dns_Status+=", key ${Dns_Zone_Key_RR}"
+        else
+            if [ ${#Dns_Zone_Key} -gt 0 ]; then
+                Dns_Status+=", key ${Dns_Zone_Key}"
+            fi
         fi
     fi
 
     Dns_Status=${Dns_Status%,*}
 
-    if [ ${#Dns_Status_Trace} -gt 0 ]; then
+    if [ ${#Dns_Status_Trace} -gt 0 ] && [ ${verbose_level} -gt 0 ]; then
         if [ ${#Dns_Status} -gt 0 ]; then
             Dns_Status+="="
         fi
@@ -2055,7 +2061,7 @@ else
                 ;;
             d)
                 Verbose=${OPTARG}
-                Verbose_Level=${OPTARG}
+                declare -i Verbose_Level=${OPTARG}
                 ;;
             f)
                 Dns_Force_Flag=0 # true
@@ -2110,14 +2116,14 @@ fi
 
 if [[ ! ${Verbose} =~ ^[0-9]+$ ]]; then
     if [[ ${VERBOSE} =~ ^[0-9]+$ ]]; then
-        Verbose=${VERBOSE}
+        declare -i Verbose=${VERBOSE}
     else
         declare -i Verbose=4 # WARNING
     fi
 fi
 
 if [[ ! ${Verbose_Level} =~ ^[0-9]+$ ]]; then
-    Verbose_Level=0
+    declare -i Verbose_Level=0
 fi
 
 if [ ${Verbose_Level} -eq 0 ]; then
@@ -2986,7 +2992,8 @@ if [ "${Dns_RR}" == "NS" ]; then
 
     Dns_Status_RR=${Dns_Status}
 
-    Dns_Status_RR+=" current ${Dns_Lookup_FQDN_RR} ${Dns_RR} = ${Dns_Lookup_Value_RR}"
+    #Dns_Status_RR+=" CURRENT ${Dns_Lookup_FQDN_RR} ${Dns_RR} = ${Dns_Lookup_Value_RR}"
+    Dns_Status_RR+=" = ${Dns_Lookup_Value_RR}"
 
     #
     # set default actions
@@ -3166,15 +3173,15 @@ if [ "${Dns_RR}" == "NS" ]; then
     else
         if [ ${Dns_Delete_RR} -eq 0 ]; then
             Dns_Action_RRS+=(delete)
-            Dns_Status_RR+=" [DELETE REQUIRED]"
+            Dns_Status_RR+=" *DELETE REQUIRED*"
         fi
 
         if [ ${Dns_Add_RR} -eq 0 ]; then
             Dns_Action_RRS+=(add)
-            Dns_Status_RR+=" [ADD REQUIRED]"
+            Dns_Status_RR+=" *ADD REQUIRED*"
         fi
 
-        Dns_Status_RR="[INFO]:${Dns_Status_RR}"
+        Dns_Status_RR="[INFO]:[LOOKUP]:${Dns_Status_RR}"
     fi
 
     dnsEcho "${Dns_Status_RR}"
@@ -3208,22 +3215,24 @@ if [ "${Dns_RR}" == "NS" ]; then
             Dns_Status_Trace="${Dns_Basename}" && dnsStatus
             Dns_Lookup_Value_RR=$(dnsLookup value "${Dns_RR}" "${Dns_Lookup_FQDN_RR}" "${Dns_Lookup_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}")
             if [ ${#Dns_Lookup_Value_RR} -eq 0 ]; then
-                Dns_Lookup_Value_RR="NULL"
+                Dns_Lookup_Value_RR="DOES NOT EXIST"
             fi
             Dns_Status_RR=${Dns_Status}
-            Dns_Status_RR+=" success ${Dns_Lookup_FQDN_RR} ${Dns_RR} = ${Dns_Lookup_Value_RR}"
-            Dns_Status_RR="[OK]:${Dns_Status_RR}" # huh?
+            #Dns_Status_RR+=" SUCCESS ${Dns_Lookup_FQDN_RR} ${Dns_RR} = ${Dns_Lookup_Value_RR}"
+            Dns_Status_RR+=" = ${Dns_Lookup_Value_RR}"
+            Dns_Status_RR="[OK]:[SUCCESS]:${Dns_Status_RR}" # huh?
             dnsEcho "${Dns_Status_RR}"
 
         else
             Dns_Status_Trace="${Dns_Basename}" && dnsStatus
             Dns_Lookup_Value_RR=$(dnsLookup value "${Dns_RR}" "${Dns_Lookup_FQDN_RR}" "${Dns_Lookup_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}")
             if [ ${#Dns_Lookup_Value_RR} -eq 0 ]; then
-                Dns_Lookup_Value_RR="NULL"
+                Dns_Lookup_Value_RR="DOES NOT EXIST"
             fi
             Dns_Status_RR=${Dns_Status}
-            Dns_Status_RR+=" after ${Dns_Lookup_FQDN_RR} ${Dns_RR} = ${Dns_Lookup_Value_RR}"
-            Dns_Status_RR="[ERROR]:${Dns_Status_RR}"
+            #Dns_Status_RR+=" AFTER ${Dns_Lookup_FQDN_RR} ${Dns_RR} = ${Dns_Lookup_Value_RR}"
+            Dns_Status_RR+=" = ${Dns_Lookup_Value_RR}"
+            Dns_Status_RR="[ERROR]:[RESULT]:${Dns_Status_RR}"
             dnsEcho "${Dns_Status_RR}"
 
             dnsAlert "[FAILED] ${0} ${Arguments}"

@@ -104,7 +104,6 @@ if [ ${#SVN_URL} -gt 0 ]; then
     fi
     if [ $Install -eq 0 ] || [ $Reinstall -eq 0 ]; then
         svn up
-        svn perms &> /dev/null
         echo
     fi
 fi
@@ -350,6 +349,19 @@ if [ -f "${Dns_Dir}/etc/profile.d/dns.sh" ]; then
         if [ $? -eq 0 ]; then
             dnsEcho "[COPIED]: ${DNS_DIR}/etc/profile.d/dns.sh"
         fi
+    fi
+fi
+
+if [ $Install -eq 0 ] || [ $Reinstall -eq 0 ]; then
+    if [ -w /etc/sysconfig/named ]; then
+        dnsEcho "[UPDATE]: remove options from /etc/sysconfig/named"
+        sed -i "/^OPTIONS/d" /etc/sysconfig/named
+    fi
+
+    if [ ${#SVN_URL} -gt 0 ]; then
+        dnsEcho "[SVN]: permissions"
+        svn perms &> /dev/null
+        echo
     fi
 fi
 
