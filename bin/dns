@@ -471,19 +471,23 @@ function dnsLookup() {
                 if [ "${dns_record}" == "MX" ]; then
                     verbose_level=24
                 else
-                    if [ "${dns_record}" == "SOA" ]; then
+                    if [ "${dns_record}" == "PTR" ]; then
                         verbose_level=24
                     else
-                        if [ "${dns_record}" == "SRV" ]; then
+                        if [ "${dns_record}" == "SOA" ]; then
                             verbose_level=24
                         else
-                            if [ "${dns_record}" == "TXT" ]; then
-                                verbose_level=26
+                            if [ "${dns_record}" == "SRV" ]; then
+                                verbose_level=24
                             else
-                                if [ "${Dns_Action}" == "lookup" ]; then
-                                    verbose_level=28
+                                if [ "${dns_record}" == "TXT" ]; then
+                                    verbose_level=26
                                 else
-                                    verbose_level=32
+                                    if [ "${Dns_Action}" == "lookup" ]; then
+                                        verbose_level=28
+                                    else
+                                        verbose_level=32
+                                    fi
                                 fi
                             fi
                         fi
@@ -1199,7 +1203,7 @@ function dnsUpdate() {
         local dns_lookup_rc=1
 
         if [ "${dns_record}" == "PTR" ]; then
-            dnsLookup match "${dns_record}" "${dns_zone_arpa}" "${dns_fqdn}" "${dns_server}" "${dns_server_port}" "${dns_zone_key}" "${dns_zone_keyfile}"
+            dnsLookup match "${dns_record}" "${dns_fqdn}" "${dns_data}" "${dns_server}" "${dns_server_port}" "${dns_zone_key}" "${dns_zone_keyfile}"
         else
             if [ "${dns_record}" == "CNAME" ]; then
                 dnsLookup match "${dns_record}" "${dns_fqdn}" "${dns_data}" "${dns_server}" "${dns_server_port}" "${dns_zone_key}" "${dns_zone_keyfile}"
