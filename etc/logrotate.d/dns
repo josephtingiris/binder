@@ -9,6 +9,7 @@
     nodelaycompress
     nosharedscripts
     missingok
+    notifempty
     rotate 30
     su named named
     postrotate
