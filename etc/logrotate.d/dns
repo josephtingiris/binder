@@ -13,7 +13,7 @@
     rotate 30
     su named named
     postrotate
-        /usr/bin/find /var/log/dns/ -type f -name "*[0-9]" -exec rm {} +
+        /usr/bin/find "$1" -size 0 -exec rm {} +
         /usr/bin/systemctl reload named.service > /dev/null 2>&1 || true
         /usr/bin/systemctl reload named-chroot.service > /dev/null 2>&1 || true
         /usr/bin/systemctl reload named-sdb.service > /dev/null 2>&1 || true
