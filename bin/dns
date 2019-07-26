@@ -2008,7 +2008,7 @@ else
         quote=""
         case "${arg}" in
             -all|--all)
-                args="${args}-f "
+                args="${args}-a "
                 ;;
             -class|--class)
                 args="${args}-c "
