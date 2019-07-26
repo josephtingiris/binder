@@ -17,37 +17,54 @@
 
 $Debug=false;
 
-$DNS_API_Keys=array(
-    "88340132-e073-41f4-ad42-b90794dde4c1", // dns-interface
-);
-
-# convert $_REQUEST keys to lowercase
-$_REQUEST_lower=array();
-if (isset($_REQUEST)) {
-    if (is_array($_REQUEST)) {
-        $_REQUEST_lower=array_change_key_case($_REQUEST, CASE_LOWER);
-    }
-}
-
 #
 # Functions
 #
 
 /*
- * evaluate $_REQUEST key given; return true if the key matches one of $DNS_API_Keys
+ * evaluate $_REQUEST key given; return true if the key matches one in etc/dns-api.keys
  */
 function dnsAuthorizedKeys() {
-    global $_REQUEST_lower, $DNS_API_Keys;
+    global $_REQUEST_lower;
 
-    if (!empty($DNS_API_Keys) && is_array($DNS_API_Keys)) {
+    # must have dns-api.keys file, or return false
+    $dns_api_keys_file=realpath(dirname(__FILE__)."/../../../etc/dns-api.keys");
+    if (!is_readable($dns_api_keys_file)) {
+        return false;
+    }
+
+    error_log("found $dns_api_keys_file readable");
+
+    # extract the api keys from the dns-api.keys file contents
+    $dns_api_keys=array();
+    $dns_api_keys_file_contents=file_get_contents($dns_api_keys_file);
+    $dns_api_keys_file_exploded=explode("\n", $dns_api_keys_file_contents);
+    foreach ($dns_api_keys_file_exploded as $dns_api_key) {
+        if (preg_match('/^#/i',$dns_api_key)) continue; // ignore lines beginnging with #
+
+        # only accept the first word of a line that has multiple spaces
+        if (preg_match('/[[:space:]]/',$dns_api_key)) {
+            $dns_api_key_exploded=preg_split("/[[:space:]]/",$dns_api_key);
+            if (!empty($dns_api_key_exploded[0])) {
+                $dns_api_key=$dns_api_key_exploded[0];
+            }
+        }
+        unset($dns_api_key_exploded);
+
+        $dns_api_key=trim($dns_api_key);
+
+        if (is_null($dns_api_key) || $dns_api_key == "") continue; // ignore empty lines (et al)
+
+        array_push($dns_api_keys,$dns_api_key);
+    }
+    unset ($dns_api_key, $dns_api_keys_file_contents, $dns_api_keys_file_exploded);
+
+    if (!empty($dns_api_keys) && is_array($dns_api_keys)) {
         if (isset($_REQUEST_lower['key'])) {
             $api_request_key=trim($_REQUEST_lower['key']);
             if (!is_null($api_request_key) && $api_request_key != "") {
-                foreach ($DNS_API_Keys as $dns_api_key) {
-                    $dns_api_key=trim($dns_api_key);
-                    if ($api_request_key == $dns_api_key) {
-                        return true;
-                    }
+                if (in_array($api_request_key,$dns_api_keys)) {
+                    return true;
                 }
             }
         }
@@ -89,6 +106,14 @@ function dnsResponseOutput($response_output=null, $response_code=null) {
 # Main
 #
 
+# convert $_REQUEST keys to lowercase
+$_REQUEST_lower=array();
+if (isset($_REQUEST)) {
+    if (is_array($_REQUEST)) {
+        $_REQUEST_lower=array_change_key_case($_REQUEST, CASE_LOWER);
+    }
+}
+
 $Response_Output=null;
 
 # must be authorized, or exit()
@@ -97,7 +122,7 @@ if (!dnsAuthorizedKeys()) {
 }
 
 # must have dns tool
-$Dns_Exec=realpath(dirname(__FILE__)."/../../bin/dns");
+$Dns_Exec=realpath(dirname(__FILE__)."/../../../bin/dns");
 if (empty($Dns_Exec) || !is_readable($Dns_Exec) || !is_executable($Dns_Exec)) {
     dnsResponseOutput("dependent dns file not found executable",503);
 }
