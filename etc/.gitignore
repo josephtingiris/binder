@@ -1,4 +1,5 @@
 dns.conf
+dns-api.keys
 krb5.conf
 named.primary.conf
 named.primary.private.clients.acl.conf
