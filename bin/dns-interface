@@ -1,0 +1,182 @@
+#!/bin/bash
+
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+
+function aborting() {
+    printf "\naborting, ... $@\n\n"
+    exit 1
+}
+
+function usage() {
+    printf "\nusage: $0 <dns server> <api key> <add|update> [client domain] [default interface]\n"
+    printf "\nHINT:\n\n"
+    printf "* If no client domain is provided then it will be guessed.\n"
+    printf "* To ensure the FQDN gets added to the correct domain, specify a client domain.\n"
+    printf "* The default interface will be that of the default route, thus the short name of the machine will point there.\n"
+    printf "* If a default interface is given then that's what's used for the short name of the machine, not the default route's interface.\n"
+
+    if [ "$1" != "" ]; then
+        printf "\nNOTE:\n\n"
+        printf "$@\n"
+    fi
+
+    printf "\n"
+
+    exit 2
+}
+
+Dns_Server="${1}"
+Dns_API_Key="${2}"
+Dns_Action="${3,,}"
+
+if [ ${#Dns_Server} -eq 0 ] || [ ${#Dns_API_Key} -eq 0 ] || [ ${#Dns_Action} -eq 0 ]; then
+    usage
+fi
+
+if [ "${Dns_Action}" != "add" ] && [ "${Dns_Action}" != "update" ]; then
+    usage "dns action (3rd argument) must be one of 'add' or 'update', not '${Dns_Action}'"
+fi
+
+Dependencies=()
+Dependencies+=(date)
+Dependencies+=(grep)
+Dependencies+=(hostname)
+Dependencies+=(ip)
+
+for Dependency in ${Dependencies[@]}; do
+    if ! type -P "${Dependency}" &> /dev/null; then
+        aborting "dependency '$Dependency' not found"
+    fi
+done
+
+if [ -r /sys/class/net/${4} ]; then
+    Default_Interface="${4}"
+    Client_Domain="${5}"
+else
+    if [[ "${4}" =~ \. ]]; then
+        Client_Domain="${4}"
+        Default_Interface="${5}"
+    else
+        Default_Interface="${4}"
+        Client_Domain="${5}"
+    fi
+fi
+
+if [ ${#Default_Interface} -gt 0 ]; then
+    if [ ! -r /sys/class/net/${Default_Interface} ]; then
+        aborting "default interface '${Default_Interface}' not found readable"
+    fi
+fi
+
+if [ ${#Client_Domain} -eq 0 ]; then
+    Client_Domain=$(hostname -d)
+    if [ ${#Client_Domain} -eq 0 ]; then
+        Client_Domain=${Dns_Server#*.}
+    fi
+fi
+
+if type -P "curl" &> /dev/null; then
+    Get_URL=curl
+    Get_URL_Arguments="-q"
+else
+    if type -P "wget" &> /dev/null; then
+        Get_URL=wget
+        Get_URL_Arguments="-O - -q"
+    fi
+fi
+
+if [ ${#Get_URL} -eq 0 ]; then
+    aborting "curl or wget file not found"
+fi
+
+Client_Shortname=$(hostname -s)
+
+if [ ${#Client_Shortname} -eq 0 ]; then
+    aborting "unable to determine client shortname (hostname -s)"
+fi
+
+Client_FQDN=${Client_Shortname}
+if [ ${#Client_Domain} -gt 0 ]; then
+    Client_FQDN+=".${Client_Domain}"
+fi
+
+Dns_API_URL="https://${Dns_Server}/api/?key=${Dns_API_Key}&action=${Dns_Action}&all=true"
+
+if [ -r /sys/class/net ] && [ -d /sys/class/net ]; then
+    cd /sys/class/net &> /dev/null
+
+    for Interface in *; do
+        Interface=${Interface,,}
+
+        if [ "${Interface}" == "lo" ]; then continue; fi
+
+        for IPV in 4 6; do
+
+            if [ ${#Default_Interface} -eq 0 ]; then
+                Client_Interface_Default=$(ip -${IPV} route 2> /dev/null | sed -nEe 's#^default.*dev (.*)( proto|$).*#\1#p')
+            else
+                Client_Interface_Default=${Default_Interface}
+            fi
+
+            Client_Interface_Default="${Client_Interface_Default%"${Client_Interface_Default##*[![:space:]]}"}"
+
+            if [ ${IPV} -eq 4 ]; then
+                Client_Record="a"
+            else
+                Client_Record="aaaa"
+            fi
+
+            Client_Interface_IPs=($(ip -o -${IPV} a s ${Interface} scope global | sed -nEe "s#.*inet (.*)[$|/].*|.*inet6 (.*)[$|/].*#\1\2#p"))
+
+            if [ "${Client_Interface_IPs}" == "" ]; then continue; fi
+
+            let Client_Interface_IP_Counter=0
+
+            for Client_Interface_IP in ${Client_Interface_IPs[@]}; do
+
+                Client_Interface_IP_Default=1
+
+                if [ ${Client_Interface_IP_Counter} -eq 0 ]; then
+                    if [ "${Interface}" == "${Client_Interface_Default}" ]; then
+                        Client_Interface_IP_Default=0
+                    fi
+                fi
+
+                if [[ "${Interface}" =~ ^${Client_Shortname} ]]; then
+                    Client_Interface_FQDN="${Interface}"
+                else
+                    Client_Interface_FQDN="${Client_Shortname}-${Interface}"
+                fi
+
+                if [ ${Client_Interface_IP_Counter} -gt 0 ]; then
+                    Client_Interface_FQDN+="-${Client_Interface_IP_Counter}"
+                fi
+
+                if [ ${#Client_Domain} -gt 0 ]; then
+                    Client_Interface_FQDN+=".${Client_Domain}"
+                fi
+
+                echo "$(date) [$Dns_Action][${IPV}][${Client_Interface_IP_Counter}] ${Client_Interface_FQDN} ${Client_Record} = ${Client_Interface_IP} (${Client_Interface_Default},default=${Client_Interface_IP_Default})"
+
+                Client_Interface_URL="${Dns_API_URL}&record=${Client_Record}&name=${Client_Interface_FQDN}&data=${Client_Interface_IP}"
+                ${Get_URL} ${Get_URL_Arguments} "${Client_Interface_URL}" 2> /dev/null | grep ^SUCCESS &> /dev/null
+                Get_RC=$?
+                if [ ${Get_RC} -ne 0 ]; then
+                    echo "$(date) - FAILED - ${Get_URL} ${Get_URL_Arguments} ${Client_Interface_URL}"
+                fi
+
+                # if it's the default interface then update the client's fully qualified domain name, too
+                if [ ${Client_Interface_IP_Default} -eq 0 ]; then
+                    Client_Default_URL="${Dns_API_URL}&record=${Client_Record}&name=${Client_FQDN}&data=${Client_Interface_IP}"
+                    ${Get_URL} ${Get_URL_Arguments} "${Client_Default_URL}" 2> /dev/null | grep ^SUCCESS &> /dev/null
+                    Get_RC=$?
+                    if [ ${Get_RC} -ne 0 ]; then
+                        echo "$(date) - FAILED - ${Get_URL} ${Get_URL_Arguments} ${Client_Default_URL}"
+                    fi
+                fi
+
+                let Client_Interface_IP_Counter=${Client_Interface_IP_Counter}+1
+            done
+        done
+    done
+fi
