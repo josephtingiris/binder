@@ -1,1 +1,1 @@
-dns-api.php
+v1/dns-api.php
