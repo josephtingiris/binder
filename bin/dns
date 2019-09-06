@@ -105,16 +105,28 @@ function dnsAlert() {
 
     (>&2 dnsEcho "${alert_message}")
 
-    if [ ${Dns_Alert_Mail_Flag} -eq 0 ]; then
-        local alert_mail mailx
+    if [ ${Dns_Alert_Mail_Flag} -eq 0 ] && [ ${Dns_Alert_Mail_Disable} != "true" ]; then
+        local alert_domain alert_mail mailx user
+
+        alert_domain=${Dns_Alert_Email##*@}
         mailx=$(type -P mailx)
+        user=$(logname 2> /dev/null)
+
+        if [ ${#user} -eq 0 ]; then
+            user=${USER}
+        fi
+
+        if [ ${#user} -eq 0 ]; then
+            user="unknown"
+        fi
+
         if [ ${#mailx} -gt 0 ] && [ ! -d ${mailx} ] && [ -x ${mailx} ] && [ ${#Dns_Alert_Email} -gt 0 ]; then
             alert_mail="${alert_message}\n\n"
             alert_mail+="exec = '${0} ${Arguments}'\n\n"
             alert_mail+="date = $(date)\n"
             alert_mail+="host = $(hostname)\n"
-            alert_mail+="user = $(logname)\n"
-            printf "${alert_mail}" | ${mailx} -S "from=DNS <noreply@clacorp.com>" -s "${alert_message}" ${Dns_Alert_Email}
+            alert_mail+="user = ${user}\n"
+            printf "${alert_mail}" | ${mailx} -S "from=DNS <noreply@${alert_domain}>" -s "${alert_message}" ${Dns_Alert_Email}
             if [ $? -eq 0 ]; then
                 # only send one alert per command line?
                 Dns_Alert_Mail_Flag=1
@@ -2949,11 +2961,11 @@ for Dns_RR in ${Dns_RRS[@]}; do
                 continue
             fi
         fi
+        fi
+
     fi
 
-fi
-
-if [ "${Dns_RR}" == "NS" ]; then
+    if [ "${Dns_RR}" == "NS" ]; then
 
         # forcing will not work, here. nsupdate will refuse to add an NS record that's a CNAME
         if (dnsLookup value "CNAME" "${Dns_Lookup_Data_RR}" "${Dns_Lookup_Data_RR}" "${Dns_Server_IP_RR}" "${Dns_Server_Port_RR}" "${Dns_Zone_Key_RR}" "${Dns_Zone_Keyfile_RR}" &> /dev/null); then
