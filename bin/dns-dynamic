@@ -1,0 +1,69 @@
+#!/bin/bash
+
+Zone_Dir=/opt/dns/zone
+
+if [ ! -d ${Zone_Dir} ]; then
+    exit
+fi
+
+function usage() {
+    echo
+    echo "$0 <host>"
+    echo
+    exit 1
+}
+
+Host="$1"
+if [ "${Host}" == "" ]; then
+    usage
+fi
+
+PATH=/opt/dns/bin:/opt/dns/sbin:/usr/bin:/usr/sbin
+
+Dev_IP4=$(ip -4 r s default | awk '{print $5}')
+Dev_IP6=$(ip -6 r s default | awk '{print $5}')
+
+Private_IP4=$(ip -4 -o a s dev ${Dev_IP4} scope global | head -1 | awk '{print $4}' | awk -F\/ '{print $1}')
+Private_IP6=$(ip -6 -o a s dev ${Dev_IP6} scope global | grep "fdfa:" | egrep -ve 'temporary|tmp' | head -1 | awk '{print $4}' | awk -F\/ '{print $1}')
+Public_IP4=$(curl --silent -4 ifconfig.co)
+#Public_IP6=$(curl --silent -6 ifconfig.co)
+Public_IP6=$(ip -6 -o a s dev ${Dev_IP6} scope global | egrep -ve 'fdfa:|temporary|tmp' | head -1 | awk '{print $4}' | awk -F\/ '{print $1}')
+
+#echo "IP4       = ${Private_IP4}/${Public_IP4}"
+#echo "IP6       = ${Private_IP6}/${Public_IP6}"
+
+cd "${Zone_Dir}"
+
+for Zone_File in $(ls -1 *zone 2> /dev/null | grep -v rpz); do
+    echo "Zone_File = ${Zone_File}"
+
+    Zone=${Zone_File%.*}
+    Zone=${Zone%.*}
+    #echo "Zone      = ${Zone}"
+
+    View=${Zone_File#*.}
+    View=${View#*.}
+    View=${View%%.*}
+    #echo "View      = ${View}"
+
+    if [ "${View}" == "private" ]; then
+        if [ ${#Private_IP4} -gt 0 ]; then
+            dns update a ${Host}.${Zone} ${Private_IP4} -v ${View}
+        fi
+        if [ ${#Private_IP6} -gt 0 ]; then
+            dns update aaaa ${Host}.${Zone} ${Private_IP6} -v ${View}
+        fi
+    fi
+
+    if [ "${View}" == "public" ]; then
+        if [ ${#Public_IP4} -gt 0 ]; then
+            dns update a ${Host}.${Zone} ${Public_IP4} -v ${View}
+        fi
+        if [ ${#Public_IP6} -gt 0 ]; then
+            dns update aaaa ${Host}.${Zone} ${Public_IP6} -v ${View}
+        fi
+    fi
+
+    echo
+    unset -v View Zone
+done
