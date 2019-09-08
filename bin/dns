@@ -105,7 +105,7 @@ function dnsAlert() {
 
     (>&2 dnsEcho "${alert_message}")
 
-    if [ ${Dns_Alert_Mail_Flag} -eq 0 ] && [ ${Dns_Alert_Mail_Disable} != "true" ]; then
+    if [ ${Dns_Alert_Mail_Flag} -eq 0 ] && [ "${Dns_Alert_Mail_Disable}" != "true" ]; then
         local alert_domain alert_mail mailx user
 
         alert_domain=${Dns_Alert_Email##*@}
