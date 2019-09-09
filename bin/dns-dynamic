@@ -24,13 +24,13 @@ Dev_IP4=$(ip -4 r s default | awk '{print $5}')
 Dev_IP6=$(ip -6 r s default | awk '{print $5}')
 
 Private_IP4=$(ip -4 -o a s dev ${Dev_IP4} scope global | head -1 | awk '{print $4}' | awk -F\/ '{print $1}')
-Private_IP6=$(ip -6 -o a s dev ${Dev_IP6} scope global | grep "fdfa:" | egrep -ve 'temporary|tmp' | head -1 | awk '{print $4}' | awk -F\/ '{print $1}')
+Private_IP6=$(ip -6 -o a s dev ${Dev_IP6} scope global | grep "fcc0:" | egrep -ve 'temporary|tmp' | head -1 | awk '{print $4}' | awk -F\/ '{print $1}')
 Public_IP4=$(curl --silent -4 ifconfig.co)
 #Public_IP6=$(curl --silent -6 ifconfig.co)
-Public_IP6=$(ip -6 -o a s dev ${Dev_IP6} scope global | egrep -ve 'fdfa:|temporary|tmp' | head -1 | awk '{print $4}' | awk -F\/ '{print $1}')
+Public_IP6=$(ip -6 -o a s dev ${Dev_IP6} scope global | egrep -ve 'fcc0:|temporary|tmp' | head -1 | awk '{print $4}' | awk -F\/ '{print $1}')
 
-#echo "IP4       = ${Private_IP4}/${Public_IP4}"
-#echo "IP6       = ${Private_IP6}/${Public_IP6}"
+echo "IP4       = ${Private_IP4}/${Public_IP4}"
+echo "IP6       = ${Private_IP6}/${Public_IP6}"
 
 cd "${Zone_Dir}"
 
