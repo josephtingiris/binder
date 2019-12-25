@@ -3,6 +3,7 @@
 /opt/dns/var/log/dns/*.log.?
 /opt/dns/var/log/dns/*.log {
     compress
+    copytruncate
     daily
     dateext
     create 0640 named named
