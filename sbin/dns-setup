@@ -258,26 +258,21 @@ if [ $Primary -eq 0 ]; then
     done
 
     if [ -f ${Dns_Dir}/etc/named.primary.conf ]; then
-        if [ -f /etc/named.conf ]; then
-            if [ $Install -eq 0 ] || [ $Reinstall -eq 0 ]; then
-                dnsBackup "/etc/named.conf"
-                dnsEcho "[BACKUP]: /etc/named.conf"
-                rm -f "/etc/named.conf"
-            else
-                dnsEcho "[FOUND]: /etc/named.conf"
-            fi
-        else
-            dnsEcho "[MISSING]: /etc/named.conf"
-        fi
 
         if [ $Install -eq 0 ] || [ $Reinstall -eq 0 ]; then
-            ln -s "${Dns_Dir}/etc/named.primary.conf" "/etc/named.conf"
+            touch /etc/sysconfig/named
+            sed -e '/^NAMEDCONF=/d' /etc/sysconfig/named
+            echo "NAMEDCONFIG=${Dns_Dir}/etc/named.primary.conf" >> /etc/sysconfig/named
+            rm -f /etc/named.conf &> /dev/null
+            cp "${Dns_Dir}/etc/named.primary.conf" /etc/named.conf
             if [ $? -eq 0 ]; then
-                dnsEcho "[LINKED]: /etc/named.conf"
+                dnsEcho "[UPDATED]: /etc/sysconfig/named"
             fi
+
         else
             dnsEcho "[FOUND]: named.primary.conf"
         fi
+
     fi
 
     # end Primary
@@ -285,26 +280,20 @@ fi
 
 if [ $Secondary -eq 0 ]; then
     if [ -f ${Dns_Dir}/etc/named.secondary.conf ]; then
-        if [ -f /etc/named.conf ]; then
-            if [ $Install -eq 0 ] || [ $Reinstall -eq 0 ]; then
-                dnsBackup "/etc/named.conf"
-                dnsEcho "[BACKUP]: /etc/named.conf"
-                rm -f "/etc/named.conf"
-            else
-                dnsEcho "[FOUND]: /etc/named.conf"
-            fi
-        else
-            dnsEcho "[MISSING]: /etc/named.conf"
-        fi
 
         if [ $Install -eq 0 ] || [ $Reinstall -eq 0 ]; then
-            ln -s "${Dns_Dir}/etc/named.secondary.conf" "/etc/named.conf"
+            touch /etc/sysconfig/named
+            sed -e '/^NAMEDCONF=/d' /etc/sysconfig/named
+            echo "NAMEDCONFIG=${Dns_Dir}/etc/named.secondary.conf" >> /etc/sysconfig/named
+            rm -f /etc/named.conf &> /dev/null
+            cp "${Dns_Dir}/etc/named.secondary.conf" /etc/named.conf
             if [ $? -eq 0 ]; then
-                dnsEcho "[LINKED]: /etc/named.conf"
+                dnsEcho "[UPDATED]: /etc/sysconfig/named"
             fi
         else
             dnsEcho "[FOUND]: named.secondary.conf"
         fi
+
     fi
 
     # end Secondary
