@@ -6,9 +6,16 @@ if [ ! -d ${Zone_Dir} ]; then
     exit
 fi
 
+function aborting() {
+    echo
+    echo "[$(date)] aborting ... $@"
+    echo
+    exit 2
+}
+
 function usage() {
     echo
-    echo "$0 <host>"
+    echo "$0 <host> [zone] [view] [-4|-6]"
     echo
     exit 1
 }
@@ -18,49 +25,100 @@ if [ "${Host}" == "" ]; then
     usage
 fi
 
+Zone="$2"
+
+View="$3"
+
+if [ ${#View} -gt 0 ]; then
+    View_Args="-v ${View}"
+fi
+
+IP_Version="$4"
+if [ "$IP_Version" != "-4" ] && [ "${IP_Version}" != "-6" ]; then
+    unset -v IP_Version
+fi
+
 PATH=/opt/dns/bin:/opt/dns/sbin:/usr/bin:/usr/sbin
 
-Dev_IP4=$(ip -4 r s default | awk '{print $5}')
-Dev_IP6=$(ip -6 r s default | awk '{print $5}')
+if [ "${IP_Version}" == "" ] || [ "${IP_Version}" == "-4" ]; then
+    Dev_IP4=$(ip -4 r s default | awk '{print $5}')
+    Private_IP4=$(ip -4 -o a s dev ${Dev_IP4} scope global | head -1 | awk '{print $4}' | awk -F\/ '{print $1}')
+    Public_IP4=$(curl --silent http://192.155.93.102/ | head -1 | awk '{print $NF}')
+    ipcalc -4 ${Public_IP4} &> /dev/null
+    if [ $? -ne 0 ]; then
+        Public_IP4=$(curl --silent -4 ifconfig.co | head -1 | awk '${print $NF}')
+        if [ $? -ne 0 ]; then
+            aborting "failed to determine Public_IP4 (${Public_IP4})"
+        fi
+    fi
+fi
 
-Private_IP4=$(ip -4 -o a s dev ${Dev_IP4} scope global | head -1 | awk '{print $4}' | awk -F\/ '{print $1}')
-Private_IP6=$(ip -6 -o a s dev ${Dev_IP6} scope global | grep "fcc0:" | egrep -ve 'temporary|tmp' | head -1 | awk '{print $4}' | awk -F\/ '{print $1}')
-Public_IP4=$(curl --silent -4 ifconfig.co)
-#Public_IP6=$(curl --silent -6 ifconfig.co)
-Public_IP6=$(ip -6 -o a s dev ${Dev_IP6} scope global | egrep -ve 'fcc0:|temporary|tmp' | head -1 | awk '{print $4}' | awk -F\/ '{print $1}')
+if [ "${IP_Version}" == "" ] || [ "${IP_Version}" == "-6" ]; then
+    Dev_IP6=$(ip -6 r s default | awk '{print $5}')
+    Private_IP6=$(ip -6 -o a s dev ${Dev_IP6} scope global | grep "fcc0:" | egrep -ve 'temporary|tmp' | head -1 | awk '{print $4}' | awk -F\/ '{print $1}')
+    Public_IP6=$(ip -6 -o a s dev ${Dev_IP6} scope global | egrep -ve 'fcc0:|temporary|tmp' | head -1 | awk '{print $4}' | awk -F\/ '{print $1}')
+fi
 
 echo "IP4       = ${Private_IP4}/${Public_IP4}"
 echo "IP6       = ${Private_IP6}/${Public_IP6}"
 
 cd "${Zone_Dir}"
 
-for Zone_File in $(ls -1 *zone 2> /dev/null | grep -v rpz); do
+for Zone_File in $(ls -1 ${Zone}*.zone 2> /dev/null | grep -v rpz); do
     echo "Zone_File = ${Zone_File}"
 
     Zone=${Zone_File%.*}
     Zone=${Zone%.*}
     #echo "Zone      = ${Zone}"
 
-    View=${Zone_File#*.}
-    View=${View#*.}
-    View=${View%%.*}
+    if [ ${#View_Args} -eq 0 ]; then
+        View=${Zone_File#*.}
+        View=${View#*.}
+        View=${View%%.*}
+    fi
     #echo "View      = ${View}"
 
     if [ "${View}" == "private" ]; then
-        if [ ${#Private_IP4} -gt 0 ]; then
-            dns update a ${Host}.${Zone} ${Private_IP4} -v ${View}
+        if [ "${IP_Version}" == "" ] || [ "${IP_Version}" == "-4" ]; then
+            if [ ${#Private_IP4} -gt 0 ]; then
+                if [ "${Host}" == "@" ]; then
+                    dns update a ${Zone} ${Private_IP4} -v ${View}
+                else
+                    dns update a ${Host}.${Zone} ${Private_IP4} -v ${View}
+                fi
+            fi
         fi
-        if [ ${#Private_IP6} -gt 0 ]; then
-            dns update aaaa ${Host}.${Zone} ${Private_IP6} -v ${View}
+
+        if [ "${IP_Version}" == "" ] || [ "${IP_Version}" == "-6" ]; then
+            if [ ${#Private_IP6} -gt 0 ]; then
+                if [ "${Host}" == "@" ]; then
+                    dns update aaaa ${Zone} ${Private_IP6} -v ${View}
+                else
+                    dns update aaaa ${Host}.${Zone} ${Private_IP6} -v ${View}
+                fi
+            fi
         fi
     fi
 
     if [ "${View}" == "public" ]; then
-        if [ ${#Public_IP4} -gt 0 ]; then
-            dns update a ${Host}.${Zone} ${Public_IP4} -v ${View}
+        if [ "${IP_Version}" == "" ] || [ "${IP_Version}" == "-4" ]; then
+            if [ ${#Public_IP4} -gt 0 ]; then
+                if [ "${Host}" == "@" ]; then
+                    dns update a ${Zone} ${Public_IP4} -v ${View}
+                else
+                    dns update a ${Host}.${Zone} ${Public_IP4} -v ${View}
+                fi
+            fi
         fi
-        if [ ${#Public_IP6} -gt 0 ]; then
-            dns update aaaa ${Host}.${Zone} ${Public_IP6} -v ${View}
+
+        if [ "${IP_Version}" == "" ] || [ "${IP_Version}" == "-6" ]; then
+            if [ ${#Public_IP6} -gt 0 ]; then
+                if [ "${Host}" == "@" ]; then
+                    dns update aaaa ${Zone} ${Public_IP6} -v ${View}
+                else
+                    dns update aaaa ${Host}.${Zone} ${Public_IP6} -v ${View}
+                fi
+            fi
         fi
     fi
 

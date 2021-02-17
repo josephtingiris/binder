@@ -1,0 +1,24 @@
+#!/bin/bash
+
+DISCORD_DOMAINS=()
+DISCORD_DOMAINS+=(discord.com)
+DISCORD_DOMAINS+=(discord.net)
+DISCORD_DOMAINS+=(discord.co)
+DISCORD_DOMAINS+=(discord.gg)
+DISCORD_DOMAINS+=(discordapp.com)
+DISCORD_DOMAINS+=(discordapp.net)
+DISCORD_DOMAINS+=(discordapp.co)
+DISCORD_DOMAINS+=(discordapp.gg)
+DISCORD_DOMAINS+=('watchanimeattheoffice.com')
+DISCORD_DOMAINS+=('dis.gd')
+
+if [ "$1" == "unblock" ]; then
+    for DOMAIN in ${DISCORD_DOMAINS[@]}; do
+        dns delete a ${DOMAIN}.rpz 192.168.12.10
+    done
+else
+    for DOMAIN in ${DISCORD_DOMAINS[@]}; do
+        dns add a ${DOMAIN}.rpz 192.168.12.10
+    done
+
+fi
