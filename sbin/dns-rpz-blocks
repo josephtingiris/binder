@@ -1,6 +1,6 @@
 #!/bin/bash
 
-Blackhole_IP=192.168.12.10
+Blackhole_IP=192.168.12.18
 
 function rpzCurlList() {
     local url="$1"

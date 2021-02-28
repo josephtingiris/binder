@@ -1,0 +1,112 @@
+#!/bin/bash
+
+PATH=/sbin:/bin:/usr/sbin:/bin:/usr/local/sbin:/usr/local/bin:/opt/dns/sbin:/opt/dns/bin
+
+OpenWrt=192.168.12.1
+
+Date=$(date +%Y-%m-%d)
+
+if [ "$1" == "force" ]; then
+    Force=0 # true
+else
+    Force=1 # false
+fi
+
+scp $OpenWrt:/etc/config/dhcp /var/tmp/dhcp.config-${Date} &> /dev/null
+if [ $? -eq 0 ]; then
+    if [ -r /var/tmp/dhcp.config-${Date} ]; then
+        echo "[$(date)] processing /var/tmp/dhcp.config-${Date} ..."
+        echo
+        while read line; do
+            if [[ "${line}" == *"config host"* ]]; then
+                if [ ${#name} -gt 0 ] && [ ${#ip} -gt 0 ]; then
+                    lookup_ip=$(dns lookup a ${name} ${ip} 2> /dev/null | awk '{print $NF}')
+                    if [[ ! "${lookup_ip}" == *"dynamic"* ]]; then
+                        if [ "${lookup_ip}" != "${ip}" ] || [ ${Force} -eq 0 ]; then
+                            echo "ip      = ${ip} (${lookup_ip})"
+                            echo "name    = ${name}"
+                            echo
+                            dns update a ${name} ${ip} -a
+                            echo
+                        fi
+                    else
+                        lookup_ptr=$(dns lookup ptr ${name} ${ip} 2> /dev/null | grep "IN PTR" | awk '{print $NF}')
+                        if [[ ! "${lookup_ptr}" =~ ^${name}\. ]]; then
+                            echo "ip      = ${ip} (${lookup_ptr})"
+                            echo "name    = ${name}"
+                            echo
+                            dns update ptr ${name} ${ip}
+                            echo
+                        fi
+                    fi
+                fi
+
+                lookup_ip=""
+                lookup_ptr=""
+                name=""
+                ip=""
+            fi
+
+            if [[ "${line}" == *"option name"* ]]; then
+                name=${line##* }
+                name=${name//\'/}
+                name=${name// /-}
+                name=${name,,}
+            fi
+
+            if [[ "${line}" == *"option ip"* ]]; then
+                ip=${line##* }
+                ip=${ip//\'/}
+                ip=${ip// /-}
+            fi
+            #echo "line: ${line}"
+        done <<< $(cat /var/tmp/dhcp.config-${Date})
+    fi
+fi
+
+scp $OpenWrt:/var/dhcp.leases /var/tmp/dhcp.leases-${Date} &> /dev/null
+if [ $? -eq 0 ]; then
+    if [ -r /var/tmp/dhcp.leases-${Date} ]; then
+        echo "[$(date)] processing /var/tmp/dhcp.leases-${Date} ..."
+        echo
+        while read ip_name; do
+            ip=${ip_name%% *}
+            name=${ip_name##* }
+            name=${name,,}
+
+            if [ ${#name} -gt 0 ] && [ ${#ip} -gt 0 ]; then
+                #echo "ip_name = ${ip_name}"
+
+                if [ "${name}" == "*" ]; then
+                    continue
+                fi
+
+                lookup_ip=$(dns lookup a ${name} ${ip} 2> /dev/null | awk '{print $NF}')
+                if [[ ! "${lookup_ip}" == *"dynamic"* ]]; then
+                    if [ "${lookup_ip}" != "${ip}" ] || [ ${Force} -eq 0 ]; then
+                        echo "ip      = ${ip} (${lookup_ip})"
+                        echo "name    = ${name}"
+                        echo
+                        dns update a ${name} ${ip} -a
+                        echo
+                    else
+                        lookup_ptr=$(dns lookup ptr ${name} ${ip} 2> /dev/null | grep "IN PTR" | awk '{print $NF}')
+                        if [[ ! "${lookup_ptr}" =~ ^${name}\. ]]; then
+                            echo "ip      = ${ip} (${lookup_ptr})"
+                            echo "name    = ${name}"
+                            echo
+                            dns update ptr ${name} ${ip}
+                            echo
+                        fi
+                    fi
+                fi
+            fi
+
+            lookup_ip=""
+            lookup_ptr=""
+            name=""
+            izp=""
+        done <<< "$(awk '{print $3" "$4}' /var/tmp/dhcp.leases-${Date})"
+    fi
+fi
+
