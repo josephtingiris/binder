@@ -2,7 +2,13 @@
 
 PATH=/sbin:/bin:/usr/sbin:/bin:/usr/local/sbin:/usr/local/bin:/opt/dns/sbin:/opt/dns/bin
 
-OpenWrt=192.168.12.1
+if [ -r /opt/dns/etc/dns-openwrt.ip ]; then
+    OPENWRT_IP=$(grep ^[0-9] /opt/dns/etc/dns-openwrt.ip 2> /dev/null | head -1)
+fi
+
+if [ "${OPENWRT_IP}" == "" ]; then
+    OPENWRT_IP=192.168.12.1
+fi
 
 Date=$(date +%Y-%m-%d)
 
@@ -12,7 +18,7 @@ else
     Force=1 # false
 fi
 
-scp $OpenWrt:/etc/config/dhcp /var/tmp/dhcp.config-${Date} &> /dev/null
+scp $OPENWRT_IP:/etc/config/dhcp /var/tmp/dhcp.config-${Date} &> /dev/null
 if [ $? -eq 0 ]; then
     if [ -r /var/tmp/dhcp.config-${Date} ]; then
         echo "[$(date)] processing /var/tmp/dhcp.config-${Date} ..."
@@ -64,7 +70,7 @@ if [ $? -eq 0 ]; then
     fi
 fi
 
-scp $OpenWrt:/var/dhcp.leases /var/tmp/dhcp.leases-${Date} &> /dev/null
+scp $OPENWRT_IP:/var/dhcp.leases /var/tmp/dhcp.leases-${Date} &> /dev/null
 if [ $? -eq 0 ]; then
     if [ -r /var/tmp/dhcp.leases-${Date} ]; then
         echo "[$(date)] processing /var/tmp/dhcp.leases-${Date} ..."

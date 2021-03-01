@@ -12,13 +12,21 @@ DISCORD_DOMAINS+=(discordapp.gg)
 DISCORD_DOMAINS+=('watchanimeattheoffice.com')
 DISCORD_DOMAINS+=('dis.gd')
 
+if [ -r /opt/dns/etc/dns-rpz.ip ]; then
+    DNS_RPZ_IP=$(grep ^[0-9] /opt/dns/etc/dns-rpz.ip 2> /dev/null | head -1)
+fi
+
+if [ "${DNS_RPZ_IP}" == "" ]; then
+    DNS_RPZ_IP=192.168.12.18
+fi
+
 if [ "$1" == "unblock" ]; then
     for DOMAIN in ${DISCORD_DOMAINS[@]}; do
-        dns delete a ${DOMAIN}.rpz 192.168.12.18
+        dns delete a ${DOMAIN}.rpz ${DNS_RPZ_IP}
     done
 else
     for DOMAIN in ${DISCORD_DOMAINS[@]}; do
-        dns add a ${DOMAIN}.rpz 192.168.12.18
+        dns add a ${DOMAIN}.rpz ${DNS_RPZ_IP}
     done
 
 fi

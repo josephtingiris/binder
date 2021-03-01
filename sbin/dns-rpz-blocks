@@ -1,6 +1,13 @@
 #!/bin/bash
 
-Blackhole_IP=192.168.12.18
+if [ -r /opt/dns/etc/dns-rpz.ip ]; then
+    DNS_RPZ_IP=$(grep ^[0-9] /opt/dns/etc/dns-rpz.ip 2> /dev/null | head -1)
+fi
+
+if [ "${DNS_RPZ_IP}" == "" ]; then
+    DNS_RPZ_IP=192.168.12.18
+fi
+
 
 function rpzCurlList() {
     local url="$1"
@@ -33,7 +40,7 @@ function rpzCurlList() {
         domain=${domain//[[:space:]]/}
         let list_counter=${list_counter}+1
         echo "[${list_counter}/${list_count}] [${list_name}] '${domain}'"
-        dns add a ${domain}.rpz ${Blackhole_IP} &>> ${list_file}.dns.out
+        dns add a ${domain}.rpz ${DNS_RPZ_IP} &>> ${list_file}.dns.out
     done < ${list_file}
 
     rm -f ${list_file} &> /dev/null
