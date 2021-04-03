@@ -1,5 +1,7 @@
 #!/bin/bash
 
+PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/dns/bin:/opt/dns/sbin
+
 if [ -r /opt/dns/etc/dns-rpz.ip ]; then
     DNS_RPZ_IP=$(grep ^[0-9] /opt/dns/etc/dns-rpz.ip 2> /dev/null | head -1)
 fi
