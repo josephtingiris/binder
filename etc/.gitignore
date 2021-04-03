@@ -36,11 +36,14 @@ named.secondary.public.response-policy.conf
 named.shared.masters.conf
 named.shared.open.forward.zones.conf
 named.shared.open.response-policy.conf
+named.shared.open.key
 named.shared.open.zone.key
 named.shared.private.forward.zones.conf
 named.shared.private.response-policy.conf
+named.shared.private.key
 named.shared.private.zone.key
 named.shared.public.forward.zones.conf
 named.shared.public.response-policy.conf
+named.shared.public.key
 named.shared.public.zone.key
 named.shared.rndc.key
