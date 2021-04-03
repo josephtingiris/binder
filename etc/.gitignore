@@ -4,6 +4,11 @@ dns-openwrt.ip
 dns-rpz.ip
 krb5.conf
 named.primary.conf
+named.primary.open.clients.acl.conf
+named.primary.open.master.zones.conf
+named.primary.open.notify.conf
+named.primary.open.response-policy.conf
+named.primary.open.zones.conf
 named.primary.private.clients.acl.conf
 named.primary.private.master.zones.conf
 named.primary.private.notify.conf
@@ -14,6 +19,11 @@ named.primary.public.master.zones.conf
 named.primary.public.notify.conf
 named.primary.public.response-policy.conf
 named.secondary.conf
+named.secondary.open.clients.acl.conf
+named.secondary.open.master.zones.conf
+named.secondary.open.notify.conf
+named.secondary.open.response-policy.conf
+named.secondary.open.zones.conf
 named.secondary.private.clients.acl.conf
 named.secondary.private.master.zones.conf
 named.secondary.private.notify.conf
@@ -24,6 +34,9 @@ named.secondary.public.master.zones.conf
 named.secondary.public.notify.conf
 named.secondary.public.response-policy.conf
 named.shared.masters.conf
+named.shared.open.forward.zones.conf
+named.shared.open.response-policy.conf
+named.shared.open.zone.key
 named.shared.private.forward.zones.conf
 named.shared.private.response-policy.conf
 named.shared.private.zone.key

@@ -1,0 +1,9 @@
+#!/bin/bash
+
+IPV6_ADDRS=$(ip -6 neigh show | grep 2c:26:17:db:3d:61 | awk '{print $1}')
+
+for IPV6_ADDR in ${IPV6_ADDRS[@]}; do
+    echo $IPV6_ADDR
+    grep $IPV6_ADDR /var/log/dns/*log | tail -100 | awk '{print $2" : "$8" : "$6}'
+    echo
+done
