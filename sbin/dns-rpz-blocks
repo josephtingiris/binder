@@ -27,7 +27,7 @@ function rpzCurlList() {
     list_file=/tmp/rpz.block.list.${list_name}
 
     printf "\n#\n# [${list_name}] ${url}\n#\n\n"
-    curl --silent "${url}" | awk "{print \$${index}}" | awk '{print $1}' | grep \\. | egrep -ve '^$|^#|<|>|\[|\]|\/|:' > ${list_file}
+    curl --insecure --location --silent "${url}" | awk "{print \$${index}}" | awk '{print $1}' | grep \\. | egrep -ve '^$|^#|<|>|\[|\]|\/|:' > ${list_file}
     wait $!
 
     sort -u ${list_file} -o ${list_file}
