@@ -1,0 +1,94 @@
+#!/bin/bash
+
+function aborting() {
+    echo
+    echo "aborting ... ${@}"
+    echo
+    exit 1
+}
+
+function usage() {
+    echo
+    echo "usage: $0 <host> [nocname]"
+    echo
+    exit 2
+}
+
+if [ "$1" == "" ]; then usage; fi
+
+ssh $1 "echo -n 'hostname: ';hostname; ip -o a s" > "/tmp/dns-machine.$1"
+
+Remote_Host=$(grep ^hostname: "/tmp/dns-machine.$1" | awk '{print $2}')
+
+if [ "${Remote_Host}" == "" ]; then
+    aborting "failed to determine remote hostname"
+fi
+
+if [ -r /opt/dns/etc/dns.conf ]; then
+    Default_Zone=$(grep ^Dns_Zone_Default= /opt/dns/etc/dns.conf | awk -F= '{print $2}')
+fi
+
+echo "Default_Zone       = ${Default_Zone}"
+echo "Remote_Host        = ${Remote_Host}"
+
+if [ "$2" == "nocname" ]; then
+    let cname=0
+else
+    let cname=1
+fi
+
+let mgmt=0
+
+Remote_Interfaces=$(grep inet "/tmp/dns-machine.$1" | egrep -ve ': lo|: virbr|: vnet|127.0.0|172.17.0|172.18.0|192.168.122' | awk '{print $2}' | sort -u)
+let Remote_Interface_Counter=0
+for Remote_Interface in ${Remote_Interfaces}; do
+    echo "Remote_Host        = ${Remote_Host} (${Remote_Interface})"
+    let inet_ip_counter=0
+    while read inet_ip; do
+        if [ "${inet_ip}" == "" ]; then continue; fi
+        private=0
+        if subnetcalc ${inet_ip} | grep -q Private; then
+            private=1
+        fi
+
+        #echo "inet_ip (${inet_ip_counter})[${private}]: ${inet_ip}"
+
+        Interface_Name="${Remote_Host}-${Remote_Interface}"
+        Interface_Name=${Interface_Name// /-}
+
+        if [ ${inet_ip_counter} -gt 0 ]; then
+            Interface_Name+="-${inet_ip_counter}"
+        fi
+
+        if [ "${Default_Zone}" != "" ]; then
+            Interface_Name+=".${Default_Zone}"
+        fi
+
+        echo
+        if [ "${private}" == "1" ]; then
+            echo "dns update a ${Interface_Name} ${inet_ip} -a"
+            dns update a ${Interface_Name} ${inet_ip} -a
+        else
+            echo "dns update a ${Interface_Name} ${inet_ip}"
+            dns update a ${Interface_Name} ${inet_ip}
+        fi
+        if [ $? -ne 0 ]; then
+            aborting "failed to dns update a ${Interface_Name} ${inet_ip} ..."
+        fi
+
+        if [ ${cname} -eq 1 ]; then
+            if echo "${inet_ip}" | grep -q 10\\..*\\.1\\.; then
+                let mgmt=1
+                echo
+                echo "dns update cname ${Remote_Host} ${Interface_Name}"
+                dns update cname ${Remote_Host} ${Interface_Name}
+            fi
+        fi
+
+        let inet_ip_counter=${inet_ip_counter}+1
+    done <<< "$(grep ": ${Remote_Interface} " "/tmp/dns-machine.$1" | grep \ inet\  | awk '{print $4}' | awk -F/ '{print $1}')"
+    echo
+done
+
+#cat "/tmp/dns-machine.$1"
+rm -f "/tmp/dns-machine.$1"
