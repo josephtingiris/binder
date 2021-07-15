@@ -1,0 +1,83 @@
+#!/bin/bash
+
+function aborting() {
+    echo
+    echo "aborting ... ${@}"
+    echo
+    exit 1
+}
+
+function usage() {
+    echo
+    echo "usage: $0 [restart|start|status|stop] [server]"
+    echo
+    exit 2
+}
+
+if [ "$1" != "restart" ]; then
+    if [ "$1" != "start" ]; then
+        if [ "$1" != "status" ]; then
+            if [ "$1" != "stop" ]; then
+                usage
+            fi
+        fi
+    fi
+fi
+
+if [ ! -r /opt/dns/etc/dns.conf ]; then
+    aborting "/opt/dns/etc/dns.conf file not found readable"
+fi
+eval $(grep ^Dns_Servers= /opt/dns/etc/dns.conf)
+
+if [ "$2" != "" ]; then
+    Dns_Servers="$2"
+fi
+
+if [ "${Dns_Servers}" == "" ]; then
+    aborting "unable to determin Dns_Servers"
+fi
+
+for Dns_Server in ${Dns_Servers}; do
+    echo "Dns_Server         = ${Dns_Server}"
+    if [ "${Dns_Server}" == "${HOSTNAME}" ] || [ "${Dns_Server}" == "localhost" ] || [ "${Dns_Server}" == "127.0.0.1" ] || [ "${Dns_Server}" == "::1" ]; then
+        echo "+ rndc sync -clean"
+        rndc sync -clean
+        echo "+ rndc thaw"
+        rndc thaw
+        if [ "$1" == "restart" ]; then
+            echo "+ systemctl stop named"
+            systemctl stop named
+            echo "+ systemctl start named"
+            systemctl start named
+            if [ $? -ne 0 ]; then
+                aborting "systemctl start named failed; manual intervention required"
+            fi
+        else
+            echo "+ systemctl $1 named"
+            systemctl $1 named
+            if [ $? -ne 0 ]; then
+                aborting "systemctl $1 named failed; manual intervention required"
+            fi
+        fi
+        echo
+        continue
+    fi
+
+    if [ "$1" == "restart" ]; then
+        echo "+ ssh \"${Dns_Server}\" 'systemctl stop named; systemctl start named'"
+        ssh "${Dns_Server}" 'systemctl stop named; systemctl start named'
+        if [ $? -ne 0 ]; then
+            aborting "ssh \"${Dns_Server}\" 'systemctl stop named; systemctl start named' failed"
+        fi
+    else
+        echo "+ ssh \"${Dns_Server}\" 'systemctl $1 named'"
+        ssh "${Dns_Server}" "systemctl $1 named"
+        if [ $? -ne 0 ]; then
+            aborting "ssh \"${Dns_Server}\" 'systemctl $1 named' failed"
+        fi
+    fi
+
+    echo
+done
+
+
